@@ -1,36 +1,43 @@
 # tmm
 
-个人用的 tmux 管理插件：一个 fzf 弹窗，用来在 session 和窗口之间切换、新建、
-改名、关闭，并用圆点显示每个窗口里 Claude Code / Codex 是在工作还是在等你。
-Rust 单二进制，每个按键只跑一次几毫秒的子命令。
+[中文](README.zh.md)
 
-## 安装
+A personal tmux plugin: one fzf popup to switch between sessions and windows,
+create, rename and close them, with a dot per window showing whether Claude
+Code or Codex is working or waiting for you. A single Rust binary; every key
+runs one subcommand that takes a few milliseconds.
 
-依赖 tmux 3.3+ 和 fzf 0.74.3+。`cargo build --release`，或从 Releases 下载
-对应平台的 tarball 解压。然后在 tmux 配置里加一行并重载：
+![tmm popup](docs/tmm.svg)
+
+## Install
+
+Needs tmux 3.3+ and fzf 0.74.3+. Either `cargo build --release` or download
+the tarball for your platform from Releases and unpack it. Then add one line to
+your tmux config and reload:
 
 ```tmux
 run-shell /path/to/tmm.tmux
 ```
 
-想看 agent 的工作 / 等待状态，跑一次 `tmm install-hooks`，它会把 hook 合并进
-`~/.claude/settings.json` 和 `~/.codex/hooks.json`（先备份）。
+For the agent dots run `tmm install-hooks` once. It merges its hooks into
+`~/.claude/settings.json` and `~/.codex/hooks.json`, backing them up first.
 
-## 键位
+## Keys
 
-`prefix + s` 打开 session 列表，`prefix + w` 打开窗口列表。打开后直接打字过滤。
+`prefix + s` opens the session list, `prefix + w` the window list. Just type to
+filter.
 
-| 键 | 动作 |
+| Key | Action |
 |---|---|
-| `Ctrl-j` `Ctrl-k` | 移动，`Ctrl-f` `Ctrl-b` 翻页 |
-| `Enter` | 切换过去；没有匹配时新建同名 session |
-| `Tab` | session 列表 / 窗口列表切换 |
-| `Ctrl-o` `Ctrl-r` `Ctrl-x` | 新建 / 改名 / 关闭，都在输入行内完成 |
-| `Ctrl-s` | 收藏，置顶 |
-| `Ctrl-l` | 预览下一个窗口 |
-| `Ctrl-v` `Ctrl-t` | 开关预览 / 全屏预览 |
-| `Ctrl-/` | 键位提示 |
-| `Esc` | 关闭 |
+| `Ctrl-j` `Ctrl-k` | move; `Ctrl-f` `Ctrl-b` page |
+| `Enter` | switch; with no match, create a session named after the query |
+| `Tab` | toggle between the session and window lists |
+| `Ctrl-o` `Ctrl-r` `Ctrl-x` | new / rename / close, all on the input line |
+| `Ctrl-s` | star, pins the session to the top |
+| `Ctrl-l` | preview the next window |
+| `Ctrl-v` `Ctrl-t` | toggle the preview / full-screen preview |
+| `Ctrl-/` | key legend |
+| `Esc` | close |
 
-选项：`@tmm-session-key`、`@tmm-window-key`、`@tmm-switch-width`、
-`@tmm-switch-height`、`@tmm-bin`，写在 `run-shell` 之前。
+Options, set before the `run-shell` line: `@tmm-session-key`,
+`@tmm-window-key`, `@tmm-switch-width`, `@tmm-switch-height`, `@tmm-bin`.

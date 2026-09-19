@@ -71,28 +71,33 @@ pub fn colour_name(value: &str) -> Option<String> {
     Some(value)
 }
 
-/// `--color` entries painting the current line like the tmux status bar.
+/// `--color` entries painting the current line like the tmux status bar:
+/// its background behind the cursor row, its foreground for the text there.
 ///
 /// `strip` drops the badge's own colour on the highlighted row, and `nth`
 /// keeps the name and dots as they are, so the activity colours survive.
 pub fn colours() -> Vec<String> {
     let style = tmux::run_lossy(&["display-message", "-p", "#{status-style}"]);
-    let bg = style
-        .split(',')
-        .find_map(|part| part.strip_prefix("bg="))
-        .and_then(colour_name);
+    let part = |key: &str| {
+        style
+            .split(',')
+            .find_map(|part| part.strip_prefix(key))
+            .and_then(colour_name)
+    };
     let mut colours = vec!["gutter:-1".to_string(), "nth:regular".to_string()];
-    match bg {
-        Some(bg) => colours.extend([
-            "fg+:black:regular:strip".to_string(),
-            format!("bg+:{bg}"),
-            format!("hl:{bg}"),
-            format!("pointer:{bg}"),
-            format!("prompt:{bg}"),
-            "hl+:black:underline".to_string(),
-        ]),
-        None => colours.push("fg+:-1:regular:strip".to_string()),
-    }
+    let Some(bg) = part("bg=") else {
+        colours.push("fg+:-1:regular:strip".to_string());
+        return colours;
+    };
+    let fg = part("fg=").unwrap_or_else(|| "-1".to_string());
+    colours.extend([
+        format!("fg+:{fg}:regular:strip"),
+        format!("bg+:{bg}"),
+        format!("hl:{bg}"),
+        format!("pointer:{bg}"),
+        format!("prompt:{bg}"),
+        format!("hl+:{fg}:underline"),
+    ]);
     colours
 }
 
