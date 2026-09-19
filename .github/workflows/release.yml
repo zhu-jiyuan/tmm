@@ -1,7 +1,7 @@
 name: Release
 
 # Pushing a tag like v0.2.0 builds every platform and publishes a GitHub
-# release with one tarball per target plus checksums.
+# release with one tarball per target.
 on:
   push:
     tags: ["v*"]
@@ -44,7 +44,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
-          path: dist/*.tar.gz*
+          path: dist/*.tar.gz
           if-no-files-found: error
 
   release:

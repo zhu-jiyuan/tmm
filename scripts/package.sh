@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build a release binary for one target and bundle it with the plugin script:
 #   scripts/package.sh aarch64-apple-darwin
-# Produces dist/tmm-v<version>-<target>.tar.gz and its .sha256.
+# Produces dist/tmm-v<version>-<target>.tar.gz.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -16,11 +16,4 @@ mkdir -p "dist/$name"
 cp "target/$target/release/tmm" tmm.tmux README.md LICENSE "dist/$name/"
 tar -C dist -czf "dist/$name.tar.gz" "$name"
 rm -rf "dist/$name"
-
-cd dist
-if command -v sha256sum >/dev/null; then
-  sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
-else
-  shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
-fi
-cat "$name.tar.gz.sha256"
+ls -l "dist/$name.tar.gz"
