@@ -8,7 +8,7 @@ use anyhow::{Result, bail};
 
 use crate::tmux;
 
-/// `bg-transform`, `every()`, `--footer`, `--gutter`, `--id-nth`, `strip`.
+/// `bg-transform`, `every()`, `--footer`, `--gutter`, `--id-nth`.
 const MIN_VERSION: (u32, u32, u32) = (0, 74, 3);
 
 /// fzf on `PATH`, else in the usual Homebrew places (tmux's own PATH can be short).
@@ -73,9 +73,13 @@ pub fn colour_name(value: &str) -> Option<String> {
 
 /// `--color` entries painting the current line like the tmux status bar:
 /// its background behind the cursor row, its foreground for the text there.
+/// A status bar without a background leaves the highlight to the user's own
+/// fzf theme.
 ///
-/// `strip` drops the badge's own colour on the highlighted row, and `nth`
-/// keeps the name and dots as they are, so the activity colours survive.
+/// Nothing is stripped on the highlighted row: the dots keep their colours,
+/// so the row under the cursor still shows whether an agent needs you.
+/// `regular` drops fzf's own bold for the current line, leaving only a
+/// session header bold there.
 pub fn colours() -> Vec<String> {
     let style = tmux::run_lossy(&["display-message", "-p", "#{status-style}"]);
     let part = |key: &str| {
@@ -84,14 +88,14 @@ pub fn colours() -> Vec<String> {
             .find_map(|part| part.strip_prefix(key))
             .and_then(colour_name)
     };
-    let mut colours = vec!["gutter:-1".to_string(), "nth:regular".to_string()];
+    let mut colours = vec!["gutter:-1".to_string()];
     let Some(bg) = part("bg=") else {
-        colours.push("fg+:-1:regular:strip".to_string());
+        colours.push("fg+:regular".to_string());
         return colours;
     };
     let fg = part("fg=").unwrap_or_else(|| "-1".to_string());
     colours.extend([
-        format!("fg+:{fg}:regular:strip"),
+        format!("fg+:{fg}:regular"),
         format!("bg+:{bg}"),
         format!("hl:{bg}"),
         format!("pointer:{bg}"),

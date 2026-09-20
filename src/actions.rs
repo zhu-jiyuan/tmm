@@ -104,6 +104,24 @@ pub fn help() -> Result<()> {
     Ok(())
 }
 
+/// `change`: which name column to show. The tree hides a window's session
+/// behind the guides, and fzf cannot match hidden text, so filtering switches
+/// to the breadcrumbs. An open prompt borrows the query line; the filter it
+/// saved is the one that counts then.
+pub fn with_nth() -> Result<()> {
+    let query = match pending()? {
+        Some(pending) => pending.query,
+        None => env::var("FZF_QUERY").unwrap_or_default(),
+    };
+    let fields = if query.is_empty() {
+        popup::TREE_FIELDS
+    } else {
+        popup::FILTER_FIELDS
+    };
+    println!("{fields}");
+    Ok(())
+}
+
 /// Move every client attached to `session` onto another session, so killing
 /// it does not take the client (and this popup) down with it.
 fn park_clients(session: &str) -> Result<()> {
@@ -185,14 +203,21 @@ fn pending_file() -> Result<PathBuf> {
     Ok(paths::sidecar(&paths::snapshot()?, "prompt"))
 }
 
-/// The open prompt, if any, removed so it is answered or cancelled once.
-fn take_pending() -> Result<Option<Pending>> {
-    let file = pending_file()?;
-    let Ok(text) = fs::read_to_string(&file) else {
+/// The open prompt, if any.
+fn pending() -> Result<Option<Pending>> {
+    let Ok(text) = fs::read_to_string(pending_file()?) else {
         return Ok(None);
     };
-    fs::remove_file(&file)?;
     Ok(Some(serde_json::from_str(&text)?))
+}
+
+/// The open prompt, if any, removed so it is answered or cancelled once.
+fn take_pending() -> Result<Option<Pending>> {
+    let pending = pending()?;
+    if pending.is_some() {
+        fs::remove_file(pending_file()?)?;
+    }
+    Ok(pending)
 }
 
 /// `session_name`, `window_index`, `window_name` of a session or window id.

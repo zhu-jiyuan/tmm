@@ -1,24 +1,34 @@
 //! The lines fed to fzf.
 //!
-//! Each line is tab-separated: `id`, session name, padded shown name, padded
-//! activity dots, badge. fzf displays fields 3–5, searches field 3 and uses
-//! field 1 (a session `$n` or window `@n` id) to keep the cursor on the same
-//! row across reloads. Everything comes from one `list-panes -a` call plus
-//! whatever the agent collector needs.
+//! Each line is tab-separated: `id`, session name, padded tree name, padded
+//! breadcrumb name, padded activity dots, badge. fzf shows one of the two
+//! name columns followed by the dots and the badge, searches the name column
+//! it shows, and uses field 1 (a session `$n` or window `@n` id) to keep the
+//! cursor on the same row across reloads. Everything comes from one
+//! `list-panes -a` call plus whatever the agent collector needs.
+//!
+//! In windows mode a session row is a header, its name in bold, and its
+//! windows follow behind dim `├`/`└` guides with no session name of their
+//! own. That reads well until a filter hides the header, and fzf cannot match
+//! text it does not show. So the breadcrumb column repeats each window's
+//! `session:index`, and the popup switches to it while the query is non-empty.
 
 use anyhow::Result;
 
 use crate::agent::{self, State};
-use crate::ansi::{pad, tint, visible_width};
+use crate::ansi::{bold, pad, tint, visible_width};
 use crate::state::Switcher;
 use crate::tmux::{self, Pane};
+
+/// Guides, indexes, breadcrumbs, badges and idle dots: present but quiet.
+const DIM: &str = "brightblack";
 
 fn dots(states: &[State]) -> String {
     states
         .iter()
         .map(|state| {
             let colour = match state {
-                State::Plain => "brightwhite",
+                State::Plain => DIM,
                 State::Working => "brightgreen",
                 State::Waiting => "brightyellow",
             };
@@ -30,13 +40,16 @@ fn dots(states: &[State]) -> String {
 
 fn badge(count: usize, noun: &str, suffix: &str) -> String {
     let plural = if count == 1 { "" } else { "s" };
-    tint(&format!("{count} {noun}{plural}{suffix}"), "brightblack")
+    tint(&format!("{count} {noun}{plural}{suffix}"), DIM)
 }
 
 pub struct Row {
     pub id: String,
     pub name: String,
-    pub shown: String,
+    /// The name column while the query is empty.
+    pub tree: String,
+    /// The name column while filtering: a window row names its session.
+    pub breadcrumb: String,
     pub dots: String,
     pub badge: String,
 }
@@ -81,10 +94,18 @@ pub fn rows(windows: bool) -> Result<Vec<Row>> {
     let panes = tmux::panes()?;
     let states = agent::states(&panes)?;
     let favorites = Switcher::load().favorites;
+    let groups = groups(&panes);
+    // Right-aligned indexes keep the names in a column past the tenth window.
+    let index_width = groups
+        .iter()
+        .flat_map(|g| &g.windows)
+        .map(|w| w.window_index.to_string().len())
+        .max()
+        .unwrap_or(1);
 
     let mut starred = Vec::new();
     let mut rest = Vec::new();
-    for group in groups(&panes) {
+    for group in groups {
         let session = group.session;
         let star = favorites.contains(&session.session_name);
         let out = if star { &mut starred } else { &mut rest };
@@ -95,33 +116,53 @@ pub fn rows(windows: bool) -> Result<Vec<Row>> {
         } else {
             ""
         };
+        // In windows mode the session row is the header of the rows below.
+        let name = if windows {
+            bold(&session.session_name)
+        } else {
+            session.session_name.clone()
+        };
+        let shown = format!("{} {name}", if star { "★" } else { " " });
         out.push(Row {
             id: session.session_id.clone(),
             name: session.session_name.clone(),
-            shown: format!("{} {}", if star { "★" } else { " " }, session.session_name),
+            breadcrumb: shown.clone(),
+            tree: shown,
             dots: dots(&window_states),
             badge: badge(group.windows.len(), "window", attached),
         });
         if !windows {
             continue;
         }
-        for window in &group.windows {
-            let active = if window.window_active {
-                " · active"
+        let last = group.windows.len() - 1;
+        for (position, window) in group.windows.iter().enumerate() {
+            let guide = if position == last { "└" } else { "├" };
+            let index = format!("{:>index_width$}", window.window_index);
+            let crumb = format!("{}:{}", session.session_name, window.window_index);
+            // Only what is worth reading: a lone pane says nothing.
+            let mut notes = Vec::new();
+            if window.window_panes > 1 {
+                notes.push(format!("{} panes", window.window_panes));
+            }
+            if window.window_active {
+                notes.push("active".to_string());
+            }
+            let badge = if notes.is_empty() {
+                String::new()
             } else {
-                ""
+                tint(&notes.join(" · "), DIM)
             };
             out.push(Row {
                 id: window.window_id.clone(),
                 name: session.session_name.clone(),
-                // The session name is part of the searchable text, so a
-                // filter like "beta ed" narrows to beta's editor window.
-                shown: format!(
-                    "  {} / {}: {}",
-                    session.session_name, window.window_index, window.window_name
+                tree: format!(
+                    "  {}  {}",
+                    tint(&format!("{guide} {index}"), DIM),
+                    window.window_name
                 ),
+                breadcrumb: format!("  {}  {}", tint(&crumb, DIM), window.window_name),
                 dots: dots(&[states[&window.window_id]]),
-                badge: badge(window.window_panes, "pane", active),
+                badge,
             });
         }
     }
@@ -131,24 +172,24 @@ pub fn rows(windows: bool) -> Result<Vec<Row>> {
 
 pub fn lines(windows: bool) -> Result<Vec<String>> {
     let rows = rows(windows)?;
-    let name_width = rows
-        .iter()
-        .map(|row| visible_width(&row.shown))
-        .max()
-        .unwrap_or(0);
-    let dots_width = rows
-        .iter()
-        .map(|row| visible_width(&row.dots))
-        .max()
-        .unwrap_or(0);
+    let widest = |column: fn(&Row) -> &str| {
+        rows.iter()
+            .map(|row| visible_width(column(row)))
+            .max()
+            .unwrap_or(0)
+    };
+    // One width for both name columns, so swapping them moves nothing else.
+    let name_width = widest(|row| &row.tree).max(widest(|row| &row.breadcrumb));
+    let dots_width = widest(|row| &row.dots);
     Ok(rows
         .iter()
         .map(|row| {
             format!(
-                "{}\t{}\t{} \t{} \t{}",
+                "{}\t{}\t{} \t{} \t{} \t{}",
                 row.id,
                 row.name,
-                pad(&row.shown, name_width),
+                pad(&row.tree, name_width),
+                pad(&row.breadcrumb, name_width),
                 pad(&row.dots, dots_width),
                 row.badge
             )

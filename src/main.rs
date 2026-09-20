@@ -64,6 +64,8 @@ enum Command {
     ViewReturn,
     /// Toggle the key legend in the footer (ctrl-/)
     Help,
+    /// Print the columns to show for the current query (runs on every change)
+    WithNth,
     /// Open the inline prompt for a row (ctrl-o, ctrl-r)
     Prompt {
         kind: actions::PromptKind,
@@ -99,6 +101,7 @@ fn main() {
         Command::PreviewFull { row } => preview::full(&row),
         Command::ViewReturn => preview::view_return(),
         Command::Help => actions::help(),
+        Command::WithNth => actions::with_nth(),
         Command::Prompt { kind, id } => actions::prompt(kind, &id),
         Command::Close { id } => actions::close(&id),
         Command::Enter => actions::enter(),

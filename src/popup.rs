@@ -10,6 +10,10 @@
 //! mode lists each session's windows below it. The mode is a per-popup flag
 //! kept in a sidecar of the snapshot; `prefix + s` and `prefix + w` pick the
 //! initial one and `tab` toggles it.
+//!
+//! Window rows have two name columns (see `rows`): a tree for browsing and
+//! breadcrumbs for filtering. fzf cannot match text it does not show, so the
+//! `change` binding swaps the displayed column as the query empties or fills.
 
 use std::io::Write;
 use std::path::Path;
@@ -26,6 +30,10 @@ pub(crate) const LEGEND: &str = "ctrl-j/k move · ctrl-f/b page · tab windows\n
                                  ctrl-o new · ctrl-r rename · ctrl-x close\n\
                                  ctrl-s star · ctrl-l next preview window\n\
                                  ctrl-v preview · ctrl-t full · ctrl-/ help · esc";
+
+/// `--with-nth` while the query is empty (tree) and while filtering (breadcrumbs).
+pub(crate) const TREE_FIELDS: &str = "3,5,6";
+pub(crate) const FILTER_FIELDS: &str = "4,5,6";
 
 /// The prompt names the mode, since tmux cannot retitle an open popup.
 pub(crate) fn base_prompt(windows: bool) -> &'static str {
@@ -120,6 +128,7 @@ pub fn switch(client: &str, windows: bool) -> Result<()> {
         format!("ctrl-/:transform-footer({})", cmd("help")),
         format!("enter:transform:{}", cmd("enter")),
         format!("esc:transform:{}", cmd("esc")),
+        format!("change:transform-with-nth:{}", cmd("with-nth")),
         // One timer for both: redraw the preview (a short-lived process each
         // time, so fzf shows no spinner) and refresh the rows in the background.
         format!(
@@ -144,7 +153,7 @@ pub fn switch(client: &str, windows: bool) -> Result<()> {
         "--delimiter",
         "\t",
         "--with-nth",
-        "3,4,5",
+        TREE_FIELDS,
         "--nth",
         "1",
         "--tabstop",

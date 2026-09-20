@@ -70,6 +70,11 @@ pub fn tint(text: &str, colour: &str) -> String {
     format!("\x1b[{}m{text}\x1b[0m", sgr(colour))
 }
 
+/// `text` in bold, reset afterwards.
+pub fn bold(text: &str) -> String {
+    format!("\x1b[1m{text}\x1b[0m")
+}
+
 fn cell_width(c: char) -> usize {
     c.width().unwrap_or(0)
 }

@@ -142,6 +142,21 @@ impl Drop for Server {
     }
 }
 
+/// Text without its ANSI colour sequences.
+fn plain(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('\x1b') {
+        out.push_str(&rest[..start]);
+        let end = rest[start..]
+            .find('m')
+            .map_or(rest.len(), |i| start + i + 1);
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn names(rows: &str) -> Vec<String> {
     rows.lines()
         .map(|line| line.split('\t').nth(1).unwrap().to_string())
@@ -161,9 +176,14 @@ fn rows_favorites_help_and_refresh() {
     assert_eq!(names(&rows), ["alpha", "beta", "gamma"]);
     let beta: Vec<&str> = rows.lines().nth(1).unwrap().split('\t').collect();
     assert_eq!(beta[2].trim(), "beta");
-    assert_eq!(beta[3].matches('●').count(), 2, "one dot per window");
-    assert!(beta[3].contains("\x1b[97m"), "plain dots are bright white");
-    assert!(beta[4].contains("2 windows"));
+    assert_eq!(
+        beta[3].trim(),
+        "beta",
+        "sessions mode: both name columns alike"
+    );
+    assert_eq!(beta[4].matches('●').count(), 2, "one dot per window");
+    assert!(beta[4].contains("\x1b[90m"), "plain dots are dim grey");
+    assert!(beta[5].contains("2 windows"));
     let name_width = |row: &str| row.split('\t').nth(2).unwrap().len();
     assert_eq!(
         name_width(rows.lines().next().unwrap()),
@@ -346,6 +366,16 @@ fn inline_prompts_and_closing() {
         !server.state.join("snap.prompt").exists(),
         "Esc drops the pending prompt"
     );
+
+    // The tree hides a window's session; filtering shows the breadcrumbs.
+    assert_eq!(server.tmm(&["with-nth"]).trim(), "3,5,6");
+    let filtering = server.tmm_with(&["with-nth"], "", &[("FZF_QUERY", "om")]);
+    assert_eq!(String::from_utf8_lossy(&filtering.stdout).trim(), "4,5,6");
+    // While a prompt borrows the query line, the filter it saved decides.
+    server.tmm(&["prompt", "rename", &server.session_id("omega")]);
+    let typing = server.tmm_with(&["with-nth"], "", &[("FZF_QUERY", "omeg")]);
+    assert_eq!(String::from_utf8_lossy(&typing.stdout).trim(), "3,5,6");
+    server.tmm(&["esc"]);
 }
 
 #[test]
@@ -373,19 +403,37 @@ fn windows_mode_lists_manages_and_previews_windows() {
             && ids[2].starts_with('@')
             && ids[3].starts_with('$')
     );
+    let header: Vec<&str> = rows.lines().next().unwrap().split('\t').collect();
+    assert!(
+        header[2].contains("\x1b[1malpha"),
+        "session rows are bold headers: {:?}",
+        header[2]
+    );
+    let first: Vec<&str> = rows.lines().nth(1).unwrap().split('\t').collect();
+    assert!(plain(first[2]).starts_with("  ├ 0  "), "{:?}", first[2]);
+    assert!(first[5].contains("active"), "{:?}", first[5]);
     let editor: Vec<&str> = rows.lines().nth(2).unwrap().split('\t').collect();
     assert_eq!(
         editor[1], "alpha",
         "window rows carry their session name for ctrl-s"
     );
     assert_eq!(
-        editor[2].trim(),
-        "alpha / 1: editor",
-        "window rows carry the session name"
+        plain(editor[2]).trim(),
+        "└ 1  editor",
+        "the last window closes the tree"
     );
-    assert_eq!(editor[3].matches('●').count(), 1, "one dot per window row");
-    assert!(editor[4].contains("1 pane"), "{}", editor[4]);
-    assert!(rows.lines().nth(1).unwrap().contains("· active"));
+    assert_eq!(
+        plain(editor[3]).trim(),
+        "alpha:1  editor",
+        "the breadcrumb column names the session"
+    );
+    assert_eq!(
+        plain(editor[2]).chars().count(),
+        plain(editor[3]).chars().count(),
+        "both name columns share a width"
+    );
+    assert_eq!(editor[4].matches('●').count(), 1, "one dot per window row");
+    assert_eq!(editor[5], "", "a lone pane is not worth a badge");
 
     let editor_id = ids[2].clone();
     let preview = server.tmm(&["preview", &editor_id]);
@@ -427,6 +475,11 @@ fn windows_mode_lists_manages_and_previews_windows() {
         3,
         "an unnamed window is fine"
     );
+
+    server.tmux(&["split-window", "-d", "-t", &editor_id]);
+    let listed = server.tmm(&["list"]);
+    let split: Vec<&str> = listed.lines().nth(2).unwrap().split('\t').collect();
+    assert!(split[5].contains("2 panes"), "{:?}", split[5]);
 
     assert!(
         server
@@ -617,7 +670,7 @@ fn agent_activity_from_hooks_and_from_the_screen() {
             .next()
             .unwrap()
             .split('\t')
-            .nth(3)
+            .nth(4)
             .unwrap()
             .matches('●')
             .count(),
