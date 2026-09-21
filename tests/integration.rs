@@ -415,8 +415,12 @@ fn windows_mode_lists_manages_and_previews_windows() {
         header[2]
     );
     let first: Vec<&str> = rows.lines().nth(1).unwrap().split('\t').collect();
-    assert!(plain(first[2]).starts_with("  ├ 0  "), "{:?}", first[2]);
-    assert!(first[5].contains("active"), "{:?}", first[5]);
+    assert!(
+        plain(first[2]).starts_with("  ├ 0 → "),
+        "the arrow marks the session's current window: {:?}",
+        first[2]
+    );
+    assert_eq!(first[5], "", "no badge beyond the arrow: {:?}", first[5]);
     let editor: Vec<&str> = rows.lines().nth(2).unwrap().split('\t').collect();
     assert_eq!(
         editor[1], "alpha",
@@ -424,13 +428,19 @@ fn windows_mode_lists_manages_and_previews_windows() {
     );
     assert_eq!(
         plain(editor[2]).trim(),
-        "└ 1  editor",
+        "└ 1   editor",
         "the last window closes the tree"
     );
     assert_eq!(
         plain(editor[3]).trim(),
-        "alpha:1  editor",
+        "alpha:1   editor",
         "the breadcrumb column names the session"
+    );
+    let lone: Vec<&str> = rows.lines().nth(4).unwrap().split('\t').collect();
+    assert!(
+        plain(lone[2]).starts_with("  └ 0   "),
+        "a session with one window has nothing to point at: {:?}",
+        lone[2]
     );
     assert_eq!(
         plain(editor[2]).chars().count(),

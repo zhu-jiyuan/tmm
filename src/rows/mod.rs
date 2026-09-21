@@ -324,17 +324,29 @@ mod tests {
         let [tree, crumb, dots, badge] = fields(&rows[1]);
         assert_eq!(
             (tree.as_str(), crumb.as_str(), dots.as_str(), badge.as_str()),
-            ("  ├ 0  zsh", "  alpha:0  zsh", "●", "2 panes · active")
+            ("  ├ 0 → zsh", "  alpha:0 → zsh", "●", "2 panes")
         );
         let [tree, crumb, _, badge] = fields(&rows[2]);
         assert_eq!(
             (tree.as_str(), crumb.as_str(), badge.as_str()),
-            ("  └ 1  editor", "  alpha:1  editor", "")
+            ("  └ 1   editor", "  alpha:1   editor", "")
         );
         assert_eq!(rows[2].id, RowId::Window("@1".into()));
         assert_eq!(
             rows[2].name, "alpha",
             "window rows carry their session for ctrl-s"
+        );
+    }
+
+    #[test]
+    fn a_lone_window_gets_no_arrow() {
+        let d = data(vec![pane(("$0", "solo"), ("@0", 0, "zsh"))]);
+
+        let rows = build(&d, Mode::Windows);
+        let [tree, crumb, _, badge] = fields(&rows[1]);
+        assert_eq!(
+            (tree.as_str(), crumb.as_str(), badge.as_str()),
+            ("  └ 0   zsh", "  solo:0   zsh", "")
         );
     }
 

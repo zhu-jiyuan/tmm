@@ -63,28 +63,28 @@ fn window_rows(group: &Group, data: &Data, index_width: usize) -> Vec<Row> {
                 .get(&window.window_id)
                 .copied()
                 .unwrap_or(State::Plain);
-            // Only what is worth reading: a lone pane says nothing.
-            let mut notes = Vec::new();
-            if window.window_panes > 1 {
-                notes.push(count(window.window_panes, "pane"));
-            }
-            if window.window_active {
-                notes.push("active".to_string());
-            }
+            // Only what is worth reading: a lone pane says nothing, and the
+            // arrow marks where a switch would land only when the session
+            // has more than one window to land on.
+            let mark = if window.window_active && group.windows.len() > 1 {
+                "→"
+            } else {
+                " "
+            };
             Row {
                 id: RowId::Window(window.window_id.clone()),
                 name: session.session_name.clone(),
                 tree: format!(
-                    "  {}  {}",
+                    "  {} {mark} {}",
                     tint(&format!("{guide} {index}"), DIM),
                     window.window_name
                 ),
-                breadcrumb: format!("  {}  {}", tint(&crumb, DIM), window.window_name),
+                breadcrumb: format!("  {} {mark} {}", tint(&crumb, DIM), window.window_name),
                 dots: dots(&[state]),
-                badge: if notes.is_empty() {
-                    String::new()
+                badge: if window.window_panes > 1 {
+                    badge(&count(window.window_panes, "pane"))
                 } else {
-                    badge(&notes.join(" · "))
+                    String::new()
                 },
             }
         })
