@@ -810,7 +810,17 @@ fn projects_mode_lists_and_opens_directories() {
     let beta = root.join("beta.app");
     fs::create_dir(beta.join("src")).unwrap();
     fs::write(beta.join("notes.md"), "").unwrap();
-    let preview = server.tmm(&["preview", beta.to_str().unwrap()]);
+    let preview_output = server.tmm_with(
+        &["preview", beta.to_str().unwrap()],
+        "",
+        &[("FZF_PREVIEW_COLUMNS", "512")],
+    );
+    assert!(
+        preview_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&preview_output.stderr)
+    );
+    let preview = String::from_utf8_lossy(&preview_output.stdout).to_string();
     assert!(
         preview.contains("beta.app")
             && plain(&preview).contains("src/")
