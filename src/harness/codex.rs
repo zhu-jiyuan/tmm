@@ -1,13 +1,10 @@
 //! OpenAI Codex.
 
-use std::sync::OnceLock;
-
 use anyhow::Result;
-use regex::Regex;
 
-use super::{CommandLine, Harness, Hook, MAIN, Records, Update, read_screen};
+use super::{CommandLine, Harness, Hints, Hook, INTERPRETERS, MAIN, Records, Update};
 use crate::agent::State;
-use crate::{install, paths};
+use crate::install;
 
 pub struct Codex;
 
@@ -27,6 +24,12 @@ const EVENTS: &[&str] = &[
 /// Tools whose `PreToolUse` means the agent is asking the user something.
 /// Codex names them `functions.request_user_input`; only the last part counts.
 const WAIT_TOOLS: &[&str] = &["request_user_input", "request_user_input_async"];
+/// Codex's own status line: its approval prompts, its limit messages, and
+/// the busy hint it shows while a turn runs.
+static HINTS: Hints = Hints::new(
+    r"would you like to run|requires? (?:your )?approval|enter to confirm|waiting for (?:your|user)|you.ve hit your limit|usage limit reached|rate limit exceeded",
+    r"esc(?:ape)? to (?:interrupt|stop)|ctrl[+-]c to interrupt",
+);
 
 impl Harness for Codex {
     fn name(&self) -> &'static str {
@@ -34,26 +37,20 @@ impl Harness for Codex {
     }
 
     fn runs(&self, command: &str) -> bool {
-        let Some(command) = CommandLine::parse(command) else {
-            return false;
-        };
+        let command = CommandLine::parse(command);
         command.executable == "codex"
             || command.executable.starts_with("codex-aarch64-")
             || command.executable.starts_with("codex-x86_64-")
-            || command.runs_script(&["node", "bun"], "/@openai/codex/")
+            || command.runs_script("/@openai/codex/")
     }
 
     fn suspect(&self, command: &str) -> bool {
-        command.starts_with("codex") || matches!(command, "node" | "bun")
+        command.starts_with("codex") || INTERPRETERS.contains(&command)
     }
 
     fn install(&self, command: &str) -> Result<()> {
-        let path = paths::home().join(HOOKS_FILE);
-        if install::merge(&path, EVENTS, command)? {
-            println!("Codex: hooks written to {}", path.display());
+        if install::merge_home("Codex", HOOKS_FILE, EVENTS, command)? {
             println!("Codex: review the new hooks in its /hooks UI.");
-        } else {
-            println!("Codex: hooks already in place");
         }
         Ok(())
     }
@@ -91,41 +88,28 @@ impl Harness for Codex {
         match records.get(MAIN) {
             // The approval hook fires before the answer; only a visible busy
             // hint proves the agent has resumed.
-            Some(record)
-                if record.state == State::Waiting && record.event == "PermissionRequest" =>
-            {
-                screen_state(&screen())
-            }
-            Some(record) => record.state,
-            None => screen_state(&screen()),
+            Some(record) if record.event != "PermissionRequest" => record.state,
+            _ => HINTS.read(&screen()),
         }
     }
-}
-
-/// Codex's own status line: its approval prompts, its limit messages, and
-/// the busy hint it shows while a turn runs.
-fn screen_state(screen: &str) -> State {
-    static WAITING: OnceLock<Regex> = OnceLock::new();
-    static WORKING: OnceLock<Regex> = OnceLock::new();
-    let waiting = WAITING.get_or_init(|| {
-        Regex::new(
-            r"would you like to run|requires? (?:your )?approval|enter to confirm|waiting for (?:your|user)|you.ve hit your limit|usage limit reached|rate limit exceeded",
-        )
-        .unwrap()
-    });
-    let working = WORKING.get_or_init(|| {
-        Regex::new(r"esc(?:ape)? to (?:interrupt|stop)|ctrl[+-]c to interrupt").unwrap()
-    });
-    read_screen(screen, waiting, working)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::Record;
+    use crate::harness::one_record;
 
     fn state(event: Option<&str>, stdin: &str) -> Option<State> {
         Codex.hook(event, stdin).map(|update| update.state)
+    }
+
+    #[test]
+    fn recognised_by_executable() {
+        assert!(Codex.runs("/opt/homebrew/bin/codex --full-auto"));
+        assert!(Codex.runs("codex-x86_64-unknown-linux-musl"));
+        assert!(Codex.runs("node /usr/lib/node_modules/@openai/codex/bin/codex.js"));
+        assert!(!Codex.runs("/Users/me/.local/share/claude/versions/2.1.263"));
+        assert!(Codex.suspect("codex-aarch64-ap") && Codex.suspect("bun") && !Codex.suspect("zsh"));
     }
 
     #[test]
@@ -164,18 +148,7 @@ mod tests {
 
     #[test]
     fn records_settle_the_state_unless_an_approval_is_pending() {
-        let record = |state: State, event: &str| {
-            Records::from([(
-                MAIN,
-                Record {
-                    state,
-                    pid: 1,
-                    started: "x".into(),
-                    harness: "codex".into(),
-                    event: event.into(),
-                },
-            )])
-        };
+        let record = |state, event| one_record("codex", state, event);
         let busy = || "Working (esc to interrupt)".to_string();
         assert_eq!(
             Codex.pane_state(&record(State::Waiting, "Stop"), &busy),
@@ -201,15 +174,12 @@ mod tests {
 
     #[test]
     fn screen_hints() {
-        assert_eq!(screen_state("Working (esc to interrupt)"), State::Working);
+        assert_eq!(HINTS.read("Working (esc to interrupt)"), State::Working);
         assert_eq!(
-            screen_state("esc to interrupt\nWould you like to run the command?"),
+            HINTS.read("esc to interrupt\nWould you like to run the command?"),
             State::Waiting
         );
-        assert_eq!(
-            screen_state("This action requires approval"),
-            State::Waiting
-        );
-        assert_eq!(screen_state("$ "), State::Waiting);
+        assert_eq!(HINTS.read("This action requires approval"), State::Waiting);
+        assert_eq!(HINTS.read("$ "), State::Waiting);
     }
 }

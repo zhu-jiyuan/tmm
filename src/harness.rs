@@ -13,6 +13,7 @@ pub mod codex;
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use anyhow::Result;
 use regex::Regex;
@@ -26,6 +27,9 @@ pub const ALL: &[&dyn Harness] = &[&claude::Claude, &codex::Codex];
 
 /// The record slot every harness has; `@tmm-agent` on the pane.
 pub const MAIN: &str = "main";
+
+/// Interpreters a harness may run under; their name alone says nothing.
+pub const INTERPRETERS: &[&str] = &["node", "bun"];
 
 /// The harness `tmm hook <name>` was called for.
 pub fn by_name(name: &str) -> Option<&'static dyn Harness> {
@@ -42,7 +46,7 @@ pub fn suspect(command: &str) -> bool {
     ALL.iter().any(|harness| harness.suspect(command))
 }
 
-pub trait Harness: Sync {
+pub trait Harness {
     /// The name on the command line (`tmm hook <name>`) and in records.
     fn name(&self) -> &'static str;
 
@@ -75,11 +79,12 @@ pub trait Harness: Sync {
 
 /// What a hook stores on the pane. `pid` and `started` tie the record to one
 /// specific process so a stale record cannot describe a reused PID.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Record {
     pub state: State,
     pub pid: i32,
     pub started: String,
+    // Records written before the rename stay on the panes of a running server.
     #[serde(alias = "provider")]
     pub harness: String,
     pub event: String,
@@ -106,20 +111,23 @@ pub struct CommandLine<'a> {
 }
 
 impl<'a> CommandLine<'a> {
-    pub fn parse(command: &'a str) -> Option<Self> {
+    pub fn parse(command: &'a str) -> Self {
         let mut words = command.split_whitespace();
-        let path = words.next()?;
-        let executable = Path::new(path).file_name()?.to_str()?;
-        Some(CommandLine {
+        let path = words.next().unwrap_or("");
+        let executable = Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        CommandLine {
             path,
             executable,
             script: words.next(),
-        })
+        }
     }
 
-    /// Whether this is one of `interpreters` running a script whose path contains `needle`.
-    pub fn runs_script(&self, interpreters: &[&str], needle: &str) -> bool {
-        interpreters.contains(&self.executable) && self.script.is_some_and(|s| s.contains(needle))
+    /// Whether this is an interpreter running a script whose path contains `needle`.
+    pub fn runs_script(&self, needle: &str) -> bool {
+        INTERPRETERS.contains(&self.executable) && self.script.is_some_and(|s| s.contains(needle))
     }
 }
 
@@ -137,14 +145,9 @@ impl Hook {
             None => serde_json::from_str(stdin).unwrap_or(Value::Null),
         };
         let event = event
-            .map(str::to_string)
-            .or_else(|| {
-                payload
-                    .get("hook_event_name")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-            .unwrap_or_default();
+            .or_else(|| payload.get("hook_event_name").and_then(Value::as_str))
+            .unwrap_or_default()
+            .to_string();
         Hook { event, payload }
     }
 
@@ -153,19 +156,59 @@ impl Hook {
     }
 }
 
-/// The reading shared by the harnesses: a question or limit message wins
-/// over a busy hint, and no busy hint at all means the agent is waiting.
-pub fn read_screen(screen: &str, waiting: &Regex, working: &Regex) -> State {
-    let lines: Vec<&str> = screen.lines().collect();
-    let start = lines.len().saturating_sub(14);
-    let tail = lines[start..].join("\n").to_lowercase();
-    if waiting.is_match(&tail) {
-        State::Waiting
-    } else if working.is_match(&tail) {
-        State::Working
-    } else {
-        State::Waiting
+/// A harness's screen regexes, compiled on first use. A question or limit
+/// message wins over a busy hint, and no busy hint at all means waiting.
+pub struct Hints {
+    waiting: &'static str,
+    working: &'static str,
+    compiled: OnceLock<(Regex, Regex)>,
+}
+
+/// How many of the captured lines the hints are read from.
+const TAIL_LINES: usize = 14;
+
+impl Hints {
+    pub const fn new(waiting: &'static str, working: &'static str) -> Self {
+        Hints {
+            waiting,
+            working,
+            compiled: OnceLock::new(),
+        }
     }
+
+    pub fn read(&self, screen: &str) -> State {
+        let (waiting, working) = self.compiled.get_or_init(|| {
+            (
+                Regex::new(self.waiting).unwrap(),
+                Regex::new(self.working).unwrap(),
+            )
+        });
+        let lines: Vec<&str> = screen.lines().collect();
+        let start = lines.len().saturating_sub(TAIL_LINES);
+        let tail = lines[start..].join("\n").to_lowercase();
+        if waiting.is_match(&tail) {
+            State::Waiting
+        } else if working.is_match(&tail) {
+            State::Working
+        } else {
+            State::Waiting
+        }
+    }
+}
+
+/// One live record in the main slot, for the harness tests.
+#[cfg(test)]
+pub(crate) fn one_record(harness: &str, state: State, event: &str) -> Records {
+    Records::from([(
+        MAIN,
+        Record {
+            state,
+            pid: 1,
+            started: "x".into(),
+            harness: harness.into(),
+            event: event.into(),
+        },
+    )])
 }
 
 #[cfg(test)]
@@ -174,31 +217,20 @@ mod tests {
 
     use super::*;
 
-    fn name(command: &str) -> Option<&'static str> {
-        detect(command).map(Harness::name)
+    #[test]
+    fn detection_needs_a_harness_executable() {
+        assert!(detect("").is_none());
+        assert!(
+            detect("bash -c 'echo codex working'").is_none(),
+            "prose in arguments is not an executable"
+        );
     }
 
     #[test]
-    fn harnesses_are_recognised_by_executable_not_prose() {
-        assert_eq!(name("bash -c 'echo codex working'"), None);
-        assert_eq!(
-            name("node /usr/lib/node_modules/@openai/codex/bin/codex.js"),
-            Some("codex")
-        );
-        assert_eq!(
-            name("/Users/me/.local/share/claude/versions/2.1.263"),
-            Some("claude")
-        );
-        assert_eq!(name("/opt/homebrew/bin/codex --full-auto"), Some("codex"));
-        assert_eq!(name(""), None);
-    }
-
-    #[test]
-    fn names_are_unique_and_resolve() {
+    fn names_are_unique() {
         let names: HashSet<&str> = ALL.iter().map(|harness| harness.name()).collect();
         assert_eq!(names.len(), ALL.len(), "harness names collide: {names:?}");
         for harness in ALL {
-            assert!(by_name(harness.name()).is_some());
             assert!(
                 harness.slots().contains(&MAIN),
                 "{} has no main slot",
@@ -232,7 +264,7 @@ mod tests {
         let record: Record = serde_json::from_str(
             r#"{"state":"working","pid":1,"started":"x","provider":"codex","event":"Stop"}"#,
         )
-        .unwrap();
+        .expect("the provider alias reads records left by older binaries");
         assert_eq!(record.harness, "codex");
         assert!(
             serde_json::to_string(&record)

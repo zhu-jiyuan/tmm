@@ -96,7 +96,7 @@ pub fn run(client: &str, mode: Mode) -> Result<()> {
 
     let popup = Popup::create()?;
     popup.set_mode(mode)?;
-    let text = rows::join(&rows::lines(mode)?);
+    let text = rows::text(mode)?;
     popup.write_snapshot(&text)?;
 
     let me = fzf::me();
@@ -204,7 +204,7 @@ fn choice(status: Option<i32>, query: &str, selected: Option<&str>) -> Result<Op
 /// refresh compares against what fzf is really showing.
 pub fn list() -> Result<()> {
     let popup = Popup::current()?;
-    let text = rows::join(&rows::lines(popup.mode())?);
+    let text = rows::text(popup.mode())?;
     if popup.exists() {
         popup.write_snapshot(&text)?;
     }
@@ -222,7 +222,7 @@ pub fn refresh(snapshot: &Path) -> Result<()> {
     }
     let settings = || (Switcher::load(), popup.mode());
     let before = settings();
-    let text = rows::join(&rows::lines(before.1)?);
+    let text = rows::text(before.1)?;
     if settings() != before {
         // A key changed the favorites or the mode while we were computing;
         // it reloads on its own, and these rows would flash the old state.

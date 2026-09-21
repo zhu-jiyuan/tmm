@@ -57,18 +57,18 @@ pub enum State {
     Waiting,
 }
 
-pub struct Process {
-    pub parent: i32,
-    pub started: String,
-    pub command: String,
+struct Process {
+    parent: i32,
+    started: String,
+    command: String,
 }
 
-pub type Table = HashMap<i32, Process>;
+type Table = HashMap<i32, Process>;
 
 /// Only the processes attached to the given terminals (`ttys003`, `pts/2`):
 /// everything running inside those panes. Far cheaper than the whole table,
 /// because `ps -t` asks the kernel for just those.
-pub fn processes_on(ttys: &[&str]) -> Result<Table> {
+fn processes_on(ttys: &[&str]) -> Result<Table> {
     if ttys.is_empty() {
         return Ok(Table::new());
     }
@@ -131,7 +131,7 @@ fn descendants(root: i32, table: &Table) -> HashSet<i32> {
 /// records: a record is live when its pid runs that harness and its start
 /// time matches, so a reused PID cannot resurrect a stale one. The screen is
 /// captured at most once, and only if a harness asks for it.
-pub fn pane_state(
+fn pane_state(
     root: i32,
     records: &HashMap<&'static str, String>,
     table: &Table,
@@ -196,10 +196,10 @@ pub fn states(panes: &[Pane]) -> Result<BTreeMap<String, State>> {
         } else {
             State::Plain
         };
-        let slot = windows
+        let window = windows
             .entry(pane.window_id.clone())
             .or_insert(State::Plain);
-        *slot = (*slot).max(state);
+        *window = (*window).max(state);
     }
     Ok(windows)
 }

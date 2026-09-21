@@ -71,6 +71,18 @@ pub fn merge(path: &Path, events: &[&str], command: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// Merge into `~/<file>` and say what happened; whether the file changed.
+pub fn merge_home(label: &str, file: &str, events: &[&str], command: &str) -> Result<bool> {
+    let path = paths::home().join(file);
+    let changed = merge(&path, events, command)?;
+    if changed {
+        println!("{label}: hooks written to {}", path.display());
+    } else {
+        println!("{label}: hooks already in place");
+    }
+    Ok(changed)
+}
+
 /// Every harness installs its own hook, a command baking in the absolute
 /// path of this binary: moving the binary means running this again.
 pub fn install_hooks() -> Result<()> {

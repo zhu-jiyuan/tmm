@@ -56,6 +56,13 @@ pub struct Data {
     pub projects: Vec<Project>,
 }
 
+impl Data {
+    /// A window's agent state; no entry means no agent.
+    pub fn state(&self, window_id: &str) -> State {
+        self.states.get(window_id).copied().unwrap_or(State::Plain)
+    }
+}
+
 pub fn fetch(mode: Mode) -> Result<Data> {
     let panes = tmux::panes()?;
     let states = agent::states(&panes)?;
@@ -91,8 +98,11 @@ pub fn build(data: &Data, mode: Mode) -> Vec<Row> {
     }
 }
 
-pub fn lines(mode: Mode) -> Result<Vec<String>> {
-    Ok(layout(&build(&fetch(mode)?, mode)))
+/// The rows of a mode as fzf reads them: one line each, newline-terminated.
+pub fn text(mode: Mode) -> Result<String> {
+    let mut text = layout(&build(&fetch(mode)?, mode)).join("\n");
+    text.push('\n');
+    Ok(text)
 }
 
 /// One tab-separated line per row. Both name columns share a width, so the
@@ -120,12 +130,6 @@ pub fn layout(rows: &[Row]) -> Vec<String> {
             )
         })
         .collect()
-}
-
-pub fn join(lines: &[String]) -> String {
-    let mut text = lines.join("\n");
-    text.push('\n');
-    text
 }
 
 /// One dot per agent: a window without one shows nothing, so a dot always
@@ -200,12 +204,7 @@ impl<'a> Group<'a> {
     fn window_states(&self, data: &Data) -> Vec<State> {
         self.windows
             .iter()
-            .map(|w| {
-                data.states
-                    .get(&w.window_id)
-                    .copied()
-                    .unwrap_or(State::Plain)
-            })
+            .map(|w| data.state(&w.window_id))
             .collect()
     }
 

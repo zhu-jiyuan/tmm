@@ -7,7 +7,6 @@
 //! `session:index` and the popup switches to it while the query is non-empty.
 
 use super::{Data, Group, Row, RowId, badge, count, dots};
-use crate::agent::State;
 use crate::ansi::{bold, faint};
 
 pub(super) fn rows(groups: &[Group], data: &Data, windows: bool) -> Vec<Row> {
@@ -58,11 +57,7 @@ fn window_rows(group: &Group, data: &Data, index_width: usize) -> Vec<Row> {
             let guide = if position == last { "└" } else { "├" };
             let index = format!("{:>index_width$}", window.window_index);
             let crumb = format!("{}:{}", session.session_name, window.window_index);
-            let state = data
-                .states
-                .get(&window.window_id)
-                .copied()
-                .unwrap_or(State::Plain);
+            let state = data.state(&window.window_id);
             // Only what is worth reading: a lone pane says nothing, and the
             // arrow marks where a switch would land only when the session
             // has more than one window to land on.

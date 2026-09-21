@@ -181,18 +181,7 @@ fn rows_favorites_help_and_refresh() {
         "beta",
         "sessions mode: both name columns alike"
     );
-    assert_eq!(beta[4].matches('●').count(), 0, "no agent, no dot");
-    assert_eq!(
-        beta[4], "  ",
-        "the dots column keeps one cell without agents"
-    );
     assert!(beta[5].contains("2 windows"));
-    let name_width = |row: &str| row.split('\t').nth(2).unwrap().len();
-    assert_eq!(
-        name_width(rows.lines().next().unwrap()),
-        name_width(rows.lines().nth(2).unwrap()),
-        "names are padded"
-    );
 
     server.tmm(&["favorite", "toggle", "gamma"]);
     let rows = server.tmm(&["list"]);
@@ -417,41 +406,14 @@ fn windows_mode_lists_manages_and_previews_windows() {
         "session rows are bold headers: {:?}",
         header[2]
     );
-    let first: Vec<&str> = rows.lines().nth(1).unwrap().split('\t').collect();
-    assert!(
-        plain(first[2]).starts_with("  ├ 0 → "),
-        "the arrow marks the session's current window: {:?}",
-        first[2]
-    );
-    assert_eq!(first[5], "", "no badge beyond the arrow: {:?}", first[5]);
+    // The layout itself is unit-tested in rows/; here only that real windows
+    // flow through it.
     let editor: Vec<&str> = rows.lines().nth(2).unwrap().split('\t').collect();
     assert_eq!(
         editor[1], "alpha",
         "window rows carry their session name for ctrl-s"
     );
-    assert_eq!(
-        plain(editor[2]).trim(),
-        "└ 1   editor",
-        "the last window closes the tree"
-    );
-    assert_eq!(
-        plain(editor[3]).trim(),
-        "alpha:1   editor",
-        "the breadcrumb column names the session"
-    );
-    let lone: Vec<&str> = rows.lines().nth(4).unwrap().split('\t').collect();
-    assert!(
-        plain(lone[2]).starts_with("  └ 0   "),
-        "a session with one window has nothing to point at: {:?}",
-        lone[2]
-    );
-    assert_eq!(
-        plain(editor[2]).chars().count(),
-        plain(editor[3]).chars().count(),
-        "both name columns share a width"
-    );
-    assert_eq!(editor[4].matches('●').count(), 0, "no agent, no dot");
-    assert_eq!(editor[5], "", "a lone pane is not worth a badge");
+    assert_eq!(plain(editor[2]).trim(), "└ 1   editor");
 
     let editor_id = ids[2].clone();
     let preview = server.tmm(&["preview", &editor_id]);
@@ -630,14 +592,15 @@ fn agent_activity_from_hooks_and_from_the_screen() {
     );
 
     let record = || server.tmux(&["show-options", "-pqv", "-t", &pane, "@tmm-agent"]);
-    let hook = |event: &str| {
-        server.tmux(&[
-            "send-keys",
-            "-t",
-            &pane,
-            &format!("{TMM} hook claude {event}"),
-            "Enter",
-        ]);
+    // The shipped hooks pass a JSON payload on stdin; the event may also be
+    // named on the command line.
+    let hook = |event: &str, on_stdin: bool| {
+        let command = if on_stdin {
+            format!("printf '{{\"hook_event_name\":\"{event}\"}}' | {TMM} hook claude")
+        } else {
+            format!("{TMM} hook claude {event}")
+        };
+        server.tmux(&["send-keys", "-t", &pane, &command, "Enter"]);
         for _ in 0..30 {
             if record().contains(&format!("\"event\":\"{event}\"")) {
                 return;
@@ -646,7 +609,7 @@ fn agent_activity_from_hooks_and_from_the_screen() {
         }
         panic!("hook {event} left no record: {}", record());
     };
-    hook("UserPromptSubmit");
+    hook("UserPromptSubmit", true);
     assert!(
         record().contains("\"working\"") && record().contains(&format!("\"pid\":{pid}")),
         "{}",
@@ -669,7 +632,7 @@ fn agent_activity_from_hooks_and_from_the_screen() {
         "\x1b[32m●\x1b[0m ",
         "a working agent is one plain green dot"
     );
-    hook("Stop");
+    hook("Stop", true);
     assert_eq!(activity(), r#"{"@0":"plain","@1":"waiting"}"#);
     assert_eq!(
         session_dots(),
@@ -679,7 +642,7 @@ fn agent_activity_from_hooks_and_from_the_screen() {
 
     server.tmux(&["send-keys", "-t", &pane, "esc to interrupt", "Enter"]);
     thread::sleep(Duration::from_millis(300));
-    hook("PermissionRequest");
+    hook("PermissionRequest", false);
     assert_eq!(
         activity(),
         r#"{"@0":"plain","@1":"working"}"#,
@@ -692,7 +655,7 @@ fn agent_activity_from_hooks_and_from_the_screen() {
         "-t",
         &pane,
         "@tmm-agent",
-        r#"{"state":"waiting","pid":1,"started":"never","provider":"claude","event":"Stop"}"#,
+        r#"{"state":"waiting","pid":1,"started":"never","harness":"claude","event":"Stop"}"#,
     ]);
     assert_eq!(
         activity(),
@@ -700,7 +663,7 @@ fn agent_activity_from_hooks_and_from_the_screen() {
         "a record for another process is ignored"
     );
 
-    hook("SessionEnd");
+    hook("SessionEnd", true);
     assert_eq!(activity(), r#"{"@0":"plain","@1":"plain"}"#);
     assert_eq!(
         session_dots().matches('●').count(),

@@ -1,13 +1,10 @@
 //! Claude Code.
 
-use std::sync::OnceLock;
-
 use anyhow::Result;
-use regex::Regex;
 
-use super::{CommandLine, Harness, Hook, MAIN, Records, Update, read_screen};
+use super::{CommandLine, Harness, Hints, Hook, INTERPRETERS, MAIN, Records, Update};
 use crate::agent::State;
-use crate::{install, paths};
+use crate::install;
 
 pub struct Claude;
 
@@ -29,6 +26,12 @@ const EVENTS: &[&str] = &[
 const WAIT_TOOLS: &[&str] = &["askuserquestion", "enterplanmode", "exitplanmode"];
 /// The notifications that ask for the user, out of the many kinds sent.
 const WAIT_NOTIFICATIONS: &[&str] = &["permission_prompt", "idle_prompt", "elicitation_dialog"];
+/// Claude Code's own status line: its permission and plan prompts, its limit
+/// messages, and the busy hint it shows while a turn runs.
+static HINTS: Hints = Hints::new(
+    r"do you want to proceed|enter to confirm|waiting for (?:your|user)|you.ve hit your limit|usage limit reached|rate limit exceeded",
+    r"esc(?:ape)? to (?:interrupt|stop)|ctrl[+-]c to interrupt",
+);
 
 impl Harness for Claude {
     fn name(&self) -> &'static str {
@@ -36,25 +39,18 @@ impl Harness for Claude {
     }
 
     fn runs(&self, command: &str) -> bool {
-        let Some(command) = CommandLine::parse(command) else {
-            return false;
-        };
+        let command = CommandLine::parse(command);
         command.executable == "claude"
             || command.path.contains("/claude/versions/")
-            || command.runs_script(&["node", "bun"], "/@anthropic-ai/claude-code/")
+            || command.runs_script("/@anthropic-ai/claude-code/")
     }
 
     fn suspect(&self, command: &str) -> bool {
-        command.starts_with("claude") || matches!(command, "node" | "bun")
+        command.starts_with("claude") || INTERPRETERS.contains(&command)
     }
 
     fn install(&self, command: &str) -> Result<()> {
-        let path = paths::home().join(HOOKS_FILE);
-        if install::merge(&path, EVENTS, command)? {
-            println!("Claude Code: hooks written to {}", path.display());
-        } else {
-            println!("Claude Code: hooks already in place");
-        }
+        install::merge_home("Claude Code", HOOKS_FILE, EVENTS, command)?;
         Ok(())
     }
 
@@ -95,41 +91,28 @@ impl Harness for Claude {
         match records.get(MAIN) {
             // A permission hook fires before approval, not when the tool
             // starts. Only a visible busy hint proves the agent has resumed.
-            Some(record)
-                if record.state == State::Waiting && record.event == "PermissionRequest" =>
-            {
-                screen_state(&screen())
-            }
-            Some(record) => record.state,
-            None => screen_state(&screen()),
+            Some(record) if record.event != "PermissionRequest" => record.state,
+            _ => HINTS.read(&screen()),
         }
     }
-}
-
-/// Claude Code's own status line: its permission and plan prompts, its
-/// limit messages, and the busy hint it shows while a turn runs.
-fn screen_state(screen: &str) -> State {
-    static WAITING: OnceLock<Regex> = OnceLock::new();
-    static WORKING: OnceLock<Regex> = OnceLock::new();
-    let waiting = WAITING.get_or_init(|| {
-        Regex::new(
-            r"do you want to proceed|enter to confirm|waiting for (?:your|user)|you.ve hit your limit|usage limit reached|rate limit exceeded",
-        )
-        .unwrap()
-    });
-    let working = WORKING.get_or_init(|| {
-        Regex::new(r"esc(?:ape)? to (?:interrupt|stop)|ctrl[+-]c to interrupt").unwrap()
-    });
-    read_screen(screen, waiting, working)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::Record;
+    use crate::harness::one_record;
 
     fn state(event: Option<&str>, stdin: &str) -> Option<State> {
         Claude.hook(event, stdin).map(|update| update.state)
+    }
+
+    #[test]
+    fn recognised_by_executable() {
+        assert!(Claude.runs("/Users/me/.local/share/claude/versions/2.1.263"));
+        assert!(Claude.runs("claude --resume"));
+        assert!(Claude.runs("node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js"));
+        assert!(!Claude.runs("node /usr/lib/node_modules/@openai/codex/bin/codex.js"));
+        assert!(Claude.suspect("claude") && Claude.suspect("node") && !Claude.suspect("zsh"));
     }
 
     #[test]
@@ -188,18 +171,7 @@ mod tests {
 
     #[test]
     fn records_settle_the_state_unless_a_permission_is_pending() {
-        let record = |state: State, event: &str| {
-            Records::from([(
-                MAIN,
-                Record {
-                    state,
-                    pid: 1,
-                    started: "x".into(),
-                    harness: "claude".into(),
-                    event: event.into(),
-                },
-            )])
-        };
+        let record = |state, event| one_record("claude", state, event);
         let busy = || "Working (esc to interrupt)".to_string();
         assert_eq!(
             Claude.pane_state(&record(State::Waiting, "Stop"), &busy),
@@ -225,12 +197,12 @@ mod tests {
 
     #[test]
     fn screen_hints() {
-        assert_eq!(screen_state("Working (esc to interrupt)"), State::Working);
+        assert_eq!(HINTS.read("Working (esc to interrupt)"), State::Working);
         assert_eq!(
-            screen_state("esc to interrupt\nDo you want to proceed?"),
+            HINTS.read("esc to interrupt\nDo you want to proceed?"),
             State::Waiting
         );
-        assert_eq!(screen_state("You’ve hit your limit"), State::Waiting);
-        assert_eq!(screen_state("$ "), State::Waiting);
+        assert_eq!(HINTS.read("You’ve hit your limit"), State::Waiting);
+        assert_eq!(HINTS.read("$ "), State::Waiting);
     }
 }

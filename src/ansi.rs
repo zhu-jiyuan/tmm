@@ -88,25 +88,44 @@ fn cell_width(c: char) -> usize {
     c.width().unwrap_or(0)
 }
 
+/// The text as the terminal reads it: escape sequences and characters, in order.
+enum Piece<'a> {
+    Escape(&'a str),
+    Char(char),
+}
+
+fn pieces(text: &str) -> impl Iterator<Item = Piece<'_>> {
+    let mut rest = text;
+    std::iter::from_fn(move || {
+        if let Some(len) = csi_len(rest) {
+            let (escape, tail) = rest.split_at(len);
+            rest = tail;
+            return Some(Piece::Escape(escape));
+        }
+        let c = rest.chars().next()?;
+        rest = &rest[c.len_utf8()..];
+        Some(Piece::Char(c))
+    })
+}
+
 /// Remove escape sequences.
 pub fn strip(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while !rest.is_empty() {
-        if let Some(len) = csi_len(rest) {
-            rest = &rest[len..];
-            continue;
-        }
-        let c = rest.chars().next().unwrap();
-        out.push(c);
-        rest = &rest[c.len_utf8()..];
-    }
-    out
+    pieces(text)
+        .filter_map(|piece| match piece {
+            Piece::Char(c) => Some(c),
+            Piece::Escape(_) => None,
+        })
+        .collect()
 }
 
 /// Number of terminal cells `text` occupies.
 pub fn visible_width(text: &str) -> usize {
-    strip(text).chars().map(cell_width).sum()
+    pieces(text)
+        .map(|piece| match piece {
+            Piece::Char(c) => cell_width(c),
+            Piece::Escape(_) => 0,
+        })
+        .sum()
 }
 
 /// Pad with spaces on the right up to `width` cells.
@@ -120,21 +139,18 @@ pub fn pad(text: &str, width: usize) -> String {
 pub fn clip_line(line: &str, columns: usize) -> String {
     let mut out = String::new();
     let mut width = 0;
-    let mut rest = line;
-    while !rest.is_empty() {
-        if let Some(len) = csi_len(rest) {
-            out.push_str(&rest[..len]);
-            rest = &rest[len..];
-            continue;
+    for piece in pieces(line) {
+        match piece {
+            Piece::Escape(escape) => out.push_str(escape),
+            Piece::Char(c) => {
+                let w = cell_width(c);
+                if width + w > columns {
+                    break;
+                }
+                out.push(c);
+                width += w;
+            }
         }
-        let c = rest.chars().next().unwrap();
-        let w = cell_width(c);
-        if width + w > columns {
-            break;
-        }
-        out.push(c);
-        width += w;
-        rest = &rest[c.len_utf8()..];
     }
     if out.contains('\x1b') {
         out.push_str("\x1b[0m");

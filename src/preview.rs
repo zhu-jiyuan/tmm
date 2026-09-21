@@ -18,7 +18,7 @@ use anyhow::{Context, Result, bail};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal;
 
-use crate::ansi::{clip_line, fit_frame};
+use crate::ansi::{clip_line, faint, fit_frame};
 use crate::popup::{Popup, Sidecar};
 use crate::rows::RowId;
 use crate::{projects, tmux};
@@ -152,7 +152,7 @@ fn directory(path: &Path, columns: usize, lines: usize) -> String {
         let last = git(path, &["log", "-1", "--format=%h %s"]);
         if !last.is_empty() {
             let branch = if branch.is_empty() { "HEAD" } else { &branch };
-            out.push(format!("\x1b[90m{branch}\x1b[0m {last}"));
+            out.push(format!("{} {last}", faint(branch)));
             out.push(String::new());
         }
     }
