@@ -314,6 +314,11 @@ fn inline_prompts_and_closing() {
     assert!(
         server
             .tmm(&["mode", "toggle"])
+            .starts_with("change-prompt(projects> )+reload-sync(")
+    );
+    assert!(
+        server
+            .tmm(&["mode", "toggle"])
             .starts_with("change-prompt(sessions> )+reload-sync(")
     );
 
@@ -385,7 +390,7 @@ fn windows_mode_lists_manages_and_previews_windows() {
     };
     server.tmux(&["new-window", "-d", "-t", "alpha:", "-n", "editor"]);
     server.tmux(&["new-session", "-d", "-s", "beta", "-x", "120", "-y", "40"]);
-    fs::write(server.state.join("snap.windows"), "").unwrap();
+    fs::write(server.state.join("snap.mode"), "windows").unwrap();
 
     let rows = server.tmm(&["list"]);
     let ids: Vec<String> = rows
@@ -507,8 +512,8 @@ fn windows_mode_lists_manages_and_previews_windows() {
     assert!(renamed.contains("reload-sync("), "{renamed}");
     assert!(server.sessions().contains(&"gamma".to_string()));
 
-    server.tmm(&["mode", "toggle"]);
-    assert!(!server.state.join("snap.windows").exists());
+    server.tmm(&["mode", "sessions"]);
+    assert!(!server.state.join("snap.mode").exists());
     assert_eq!(
         server.tmm(&["list"]).lines().count(),
         1,
@@ -676,4 +681,134 @@ fn agent_activity_from_hooks_and_from_the_screen() {
             .count(),
         2
     );
+}
+
+#[test]
+fn projects_mode_lists_and_opens_directories() {
+    let Some(server) = Server::start("projects") else {
+        return;
+    };
+    let root = server.state.join("projects");
+    for dir in ["alpha-app", "beta.app", "nested/alpha-app", ".hidden"] {
+        fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    fs::write(root.join("a-file"), "").unwrap();
+    server.tmux(&[
+        "set",
+        "-g",
+        "@tmm-projects",
+        &format!("{}:2", root.display()),
+    ]);
+    let root = fs::canonicalize(&root).unwrap();
+
+    server.tmm(&["mode", "projects"]);
+    assert_eq!(
+        fs::read_to_string(server.state.join("snap.mode")).unwrap(),
+        "projects"
+    );
+    let rows = server.tmm(&["list"]);
+    assert_eq!(
+        names(&rows),
+        ["alpha-app", "alpha-app", "beta_app", "nested"],
+        "{rows}"
+    );
+    let ids: Vec<&str> = rows
+        .lines()
+        .map(|line| line.split('\t').next().unwrap())
+        .collect();
+    assert_eq!(
+        ids[0],
+        root.join("alpha-app").to_str().unwrap(),
+        "a project with no session has its path for an id"
+    );
+    assert_eq!(ids[1], root.join("nested/alpha-app").to_str().unwrap());
+    let alpha: Vec<&str> = rows.lines().next().unwrap().split('\t').collect();
+    assert_eq!(plain(alpha[4]).trim(), "", "no session, no dots");
+    assert_eq!(
+        plain(alpha[5]),
+        root.to_str().unwrap(),
+        "the badge says where it lives"
+    );
+
+    // Enter on a project row: find or create its session.
+    let top = root.join("alpha-app");
+    let id = server
+        .tmm(&["open", top.to_str().unwrap()])
+        .trim()
+        .to_string();
+    assert!(id.starts_with('$'), "{id}");
+    assert!(server.sessions().contains(&"alpha-app".to_string()));
+    assert_eq!(
+        server.tmm(&["open", top.to_str().unwrap()]).trim(),
+        id,
+        "opening again finds the same session"
+    );
+    // A namesake started elsewhere gets its parent's name appended.
+    let nested = root.join("nested/alpha-app");
+    server.tmm(&["open", nested.to_str().unwrap()]);
+    assert!(
+        server.sessions().contains(&"alpha-app-nested".to_string()),
+        "{:?}",
+        server.sessions()
+    );
+
+    let rows = server.tmm(&["list"]);
+    assert_eq!(
+        names(&rows),
+        ["alpha-app", "alpha-app-nested", "beta_app", "nested"],
+        "open projects first: {rows}"
+    );
+    assert_eq!(
+        rows.lines().count(),
+        4,
+        "sessions outside the roots are not projects"
+    );
+    let first: Vec<&str> = rows.lines().next().unwrap().split('\t').collect();
+    assert_eq!(first[0], id, "an open project is its session's row");
+    assert_eq!(first[4].matches('●').count(), 1);
+    assert!(plain(first[5]).contains("1 window"), "{:?}", first[5]);
+
+    server.tmm(&["favorite", "toggle", "beta_app"]);
+    let rows = server.tmm(&["list"]);
+    assert_eq!(
+        names(&rows),
+        ["beta_app", "alpha-app", "alpha-app-nested", "nested"],
+        "starred first: {rows}"
+    );
+    assert!(
+        plain(rows.lines().next().unwrap().split('\t').nth(2).unwrap()).starts_with("★ beta_app")
+    );
+
+    // A project with no session previews its directory, and the row keys
+    // leave it alone.
+    let beta = root.join("beta.app");
+    fs::create_dir(beta.join("src")).unwrap();
+    fs::write(beta.join("notes.md"), "").unwrap();
+    let preview = server.tmm(&["preview", beta.to_str().unwrap()]);
+    assert!(
+        preview.contains("beta.app")
+            && plain(&preview).contains("src/")
+            && preview.contains("notes.md"),
+        "{preview:?}"
+    );
+    assert_eq!(server.tmm(&["close", beta.to_str().unwrap()]), "");
+    assert_eq!(
+        server.tmm(&["prompt", "rename", beta.to_str().unwrap()]),
+        ""
+    );
+    server.tmm(&["preview-next", beta.to_str().unwrap()]);
+    assert!(server.sessions().contains(&"alpha-app".to_string()));
+    // An open project's row is its session's row, so ctrl-x closes it.
+    assert!(server.tmm(&["close", &id]).starts_with("reload-sync("));
+    assert!(!server.sessions().contains(&"alpha-app".to_string()));
+
+    // tab cycles sessions → windows → projects → sessions.
+    server.tmm(&["mode", "sessions"]);
+    for prompt in ["windows> ", "projects> ", "sessions> "] {
+        let switched = server.tmm(&["mode", "toggle"]);
+        assert!(
+            switched.contains(&format!("change-prompt({prompt})")),
+            "{switched}"
+        );
+    }
 }

@@ -24,14 +24,14 @@ For the agent dots run `tmm install-hooks` once. It merges its hooks into
 
 ## Keys
 
-`prefix + s` opens the session list, `prefix + w` the window list. Just type to
-filter.
+`prefix + s` opens the session list, `prefix + w` the window list and
+`prefix + f` the project list. Just type to filter.
 
 | Key | Action |
 |---|---|
 | `Ctrl-j` `Ctrl-k` | move; `Ctrl-f` `Ctrl-b` page |
 | `Enter` | switch; with no match, create a session named after the query |
-| `Tab` | toggle between the session and window lists |
+| `Tab` | cycle the session, window and project lists |
 | `Ctrl-o` `Ctrl-r` `Ctrl-x` | new / rename / close, all on the input line |
 | `Ctrl-s` | star, pins the session to the top |
 | `Ctrl-l` | preview the next window |
@@ -40,4 +40,21 @@ filter.
 | `Esc` | close |
 
 Options, set before the `run-shell` line: `@tmm-session-key`,
-`@tmm-window-key`, `@tmm-switch-width`, `@tmm-switch-height`, `@tmm-bin`.
+`@tmm-window-key`, `@tmm-project-key`, `@tmm-projects`, `@tmm-switch-width`,
+`@tmm-switch-height`, `@tmm-bin`.
+
+## Projects
+
+Point `@tmm-projects` at the directories that hold your projects and
+`prefix + f` lists them, open or not. `Enter` switches to a project's
+session, creating it in that directory when there is none yet.
+
+```tmux
+set -g @tmm-projects "~/work ~/oss:2"
+```
+
+Each root is scanned one level deep, or `:N` levels; hidden directories are
+skipped. A session belongs to the directory it was started in, so a project
+opened some other way still shows as open. With no match, typing a path and
+pressing `Enter` opens that directory. Without this option `prefix + f`
+keeps its tmux meaning.

@@ -1,8 +1,8 @@
 //! Where tmm keeps things on disk.
 //!
 //! Persistent state (favorites) lives in the state directory. Per-popup
-//! scratch files (the row snapshot fzf is showing and its sidecars) live in
-//! a `run` subdirectory and are removed when the popup closes.
+//! scratch files (the row snapshot fzf is showing and its sidecars, see
+//! `popup`) live in a `run` subdirectory and go when the popup closes.
 
 use std::path::{Path, PathBuf};
 use std::{env, fs, process};
@@ -40,13 +40,6 @@ pub fn snapshot() -> Result<PathBuf> {
     env::var_os("TMM_SNAPSHOT")
         .map(PathBuf::from)
         .context("TMM_SNAPSHOT is not set; this command runs inside the popup")
-}
-
-/// A file next to the snapshot with another extension: `windows` marks the
-/// mode, `preview` the chosen preview windows, `prompt` the open question,
-/// `view` how the full view was left, `help` that the legend is hidden.
-pub fn sidecar(snapshot: &Path, extension: &str) -> PathBuf {
-    snapshot.with_extension(extension)
 }
 
 /// Write via a temporary file and rename, so readers never see a half-written file.

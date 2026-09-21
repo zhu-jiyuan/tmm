@@ -14,8 +14,10 @@ mod install;
 mod paths;
 mod popup;
 mod preview;
+mod projects;
 mod rows;
 mod state;
+mod switch;
 mod tmux;
 
 use std::path::PathBuf;
@@ -36,15 +38,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Open the popup for a tmux client (prefix + s, prefix + w)
+    /// Open the popup for a tmux client (prefix + s, prefix + w, prefix + f)
     Switch {
         client: String,
         /// Start in windows mode
-        #[arg(long)]
+        #[arg(long, conflicts_with = "projects")]
         windows: bool,
+        /// Start in projects mode
+        #[arg(long)]
+        projects: bool,
     },
-    /// Switch the open popup between sessions and windows mode (tab)
+    /// Move the open popup to another mode: sessions, windows, projects (tab)
     Mode { action: actions::ModeAction },
+    /// Find or create the session for a project directory; prints its id
+    Open { path: PathBuf },
     /// Print the rows; fzf reloads from this
     List,
     /// Reload fzf when the rows changed (runs in the background every second)
@@ -91,10 +98,24 @@ enum Command {
 fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Switch { client, windows } => popup::switch(&client, windows),
+        Command::Switch {
+            client,
+            windows,
+            projects,
+        } => {
+            let mode = if projects {
+                popup::Mode::Projects
+            } else if windows {
+                popup::Mode::Windows
+            } else {
+                popup::Mode::Sessions
+            };
+            switch::run(&client, mode)
+        }
         Command::Mode { action } => actions::mode(action),
-        Command::List => popup::list(),
-        Command::Refresh { snapshot } => popup::refresh(&snapshot),
+        Command::Open { path } => projects::open(&path).map(|id| println!("{id}")),
+        Command::List => switch::list(),
+        Command::Refresh { snapshot } => switch::refresh(&snapshot),
         Command::Favorite { mode, name } => actions::favorite(mode, &name),
         Command::Preview { row } => preview::run(&row),
         Command::PreviewNext { row } => preview::next(&row),

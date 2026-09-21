@@ -22,13 +22,14 @@ run-shell /path/to/tmm.tmux
 
 ## 键位
 
-`prefix + s` 打开 session 列表，`prefix + w` 打开窗口列表。打开后直接打字过滤。
+`prefix + s` 打开 session 列表，`prefix + w` 打开窗口列表，`prefix + f` 打开项目
+列表。打开后直接打字过滤。
 
 | 键 | 动作 |
 |---|---|
 | `Ctrl-j` `Ctrl-k` | 移动，`Ctrl-f` `Ctrl-b` 翻页 |
 | `Enter` | 切换过去；没有匹配时新建同名 session |
-| `Tab` | session 列表 / 窗口列表切换 |
+| `Tab` | 在 session / 窗口 / 项目列表之间轮换 |
 | `Ctrl-o` `Ctrl-r` `Ctrl-x` | 新建 / 改名 / 关闭，都在输入行内完成 |
 | `Ctrl-s` | 收藏，置顶 |
 | `Ctrl-l` | 预览下一个窗口 |
@@ -36,5 +37,18 @@ run-shell /path/to/tmm.tmux
 | `Ctrl-/` | 键位提示 |
 | `Esc` | 关闭 |
 
-选项：`@tmm-session-key`、`@tmm-window-key`、`@tmm-switch-width`、
-`@tmm-switch-height`、`@tmm-bin`，写在 `run-shell` 之前。
+选项：`@tmm-session-key`、`@tmm-window-key`、`@tmm-project-key`、`@tmm-projects`、
+`@tmm-switch-width`、`@tmm-switch-height`、`@tmm-bin`，写在 `run-shell` 之前。
+
+## 项目
+
+把 `@tmm-projects` 指向存放项目的目录，`prefix + f` 就会列出其中的项目，开着的和
+没开的都有。`Enter` 切换到项目的 session，没有就以该目录为工作目录新建一个。
+
+```tmux
+set -g @tmm-projects "~/work ~/oss:2"
+```
+
+每个根目录默认扫一层，`:N` 指定层数，隐藏目录跳过。session 按启动目录归属项目，
+用别的方式开的也能对上。没有匹配时输入一个路径按 `Enter` 直接打开它。没设这个
+选项时 `prefix + f` 保持 tmux 原来的功能。

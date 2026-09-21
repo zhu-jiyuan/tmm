@@ -5,22 +5,24 @@
 //! as the input field. The prompt changes, searching pauses so the list stays
 //! put, and a header says what is being asked. Enter applies, Esc cancels,
 //! and both put everything back, filter text included. The pending question
-//! lives in the `prompt` sidecar so `enter` knows which row it was about.
+//! lives in the `Prompt` sidecar so `enter` knows which row it was about.
 //!
-//! Row ids arrive from fzf's `{1}`, which is empty when nothing matches the
-//! filter; tmux would read an empty target as the current session, so those
-//! keys do nothing then.
+//! Row ids arrive from fzf's `{1}` and go through [`RowId::parse`], which
+//! turns an empty id (nothing matched the filter) into "do nothing" and
+//! tells a project with no session, which these keys leave alone, from the
+//! sessions and windows tmux knows about.
 
-use std::path::PathBuf;
-use std::{env, fs};
+use std::env;
 
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
-use crate::popup::{self, LEGEND};
+use crate::popup::{Mode, Popup, Sidecar};
+use crate::rows::RowId;
 use crate::state::Switcher;
-use crate::{fzf, paths, tmux};
+use crate::switch::{FILTER_FIELDS, LEGEND, TREE_FIELDS};
+use crate::{fzf, tmux};
 
 fn reload() -> String {
     format!("reload-sync({} list)", fzf::me())
@@ -34,10 +36,6 @@ fn arg(value: &str) -> String {
         .find(|(_, close)| !value.contains(*close))
         .expect("a name containing every kind of bracket");
     format!("{open}{value}{close}")
-}
-
-fn is_window(id: &str) -> bool {
-    id.starts_with('@')
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -67,26 +65,24 @@ pub fn favorite(mode: FavoriteMode, name: &str) -> Result<()> {
 pub enum ModeAction {
     Sessions,
     Windows,
+    Projects,
     Toggle,
 }
 
-/// `tab`: flip the mode, rename the prompt, reload the rows. An open prompt
-/// is cancelled, since its question was about the old list.
+/// `tab`: move to the next mode, rename the prompt, reload the rows. An
+/// open prompt is cancelled, since its question was about the old list.
 pub fn mode(action: ModeAction) -> Result<()> {
-    let flag = paths::sidecar(&paths::snapshot()?, "windows");
-    let windows = match action {
-        ModeAction::Sessions => false,
-        ModeAction::Windows => true,
-        ModeAction::Toggle => !flag.exists(),
+    let popup = Popup::current()?;
+    let mode = match action {
+        ModeAction::Sessions => Mode::Sessions,
+        ModeAction::Windows => Mode::Windows,
+        ModeAction::Projects => Mode::Projects,
+        ModeAction::Toggle => popup.mode().next(),
     };
-    if windows {
-        fs::write(&flag, "")?;
-    } else if flag.exists() {
-        fs::remove_file(&flag)?;
-    }
-    let back = match take_pending()? {
-        Some(pending) => restore(&pending.query)?,
-        None => format!("change-prompt({})", popup::base_prompt(windows)),
+    popup.set_mode(mode)?;
+    let back = match take_pending(&popup)? {
+        Some(pending) => restore(&popup, &pending.query),
+        None => format!("change-prompt({})", mode.prompt()),
     };
     println!("{back}+{}", reload());
     Ok(())
@@ -94,12 +90,12 @@ pub fn mode(action: ModeAction) -> Result<()> {
 
 /// `ctrl-/`: an empty footer hides the legend.
 pub fn help() -> Result<()> {
-    let flag = paths::sidecar(&paths::snapshot()?, "help");
-    if flag.exists() {
-        fs::remove_file(&flag)?;
+    let popup = Popup::current()?;
+    if popup.has(Sidecar::Help) {
+        popup.remove(Sidecar::Help)?;
         println!("{LEGEND}");
     } else {
-        fs::write(&flag, "")?;
+        popup.write(Sidecar::Help, "")?;
     }
     Ok(())
 }
@@ -109,14 +105,15 @@ pub fn help() -> Result<()> {
 /// to the breadcrumbs. An open prompt borrows the query line; the filter it
 /// saved is the one that counts then.
 pub fn with_nth() -> Result<()> {
-    let query = match pending()? {
+    let popup = Popup::current()?;
+    let query = match pending(&popup)? {
         Some(pending) => pending.query,
         None => env::var("FZF_QUERY").unwrap_or_default(),
     };
     let fields = if query.is_empty() {
-        popup::TREE_FIELDS
+        TREE_FIELDS
     } else {
-        popup::FILTER_FIELDS
+        FILTER_FIELDS
     };
     println!("{fields}");
     Ok(())
@@ -130,7 +127,9 @@ fn park_clients(session: &str) -> Result<()> {
         return Ok(());
     };
     for line in tmux::run(&["list-clients", "-F", "#{client_name}\t#{session_id}"])?.lines() {
-        let (client, attached) = line.split_once('\t').unwrap();
+        let Some((client, attached)) = line.split_once('\t') else {
+            continue;
+        };
         if attached == session {
             tmux::run(&["switch-client", "-c", client, "-t", fallback])?;
         }
@@ -138,34 +137,41 @@ fn park_clients(session: &str) -> Result<()> {
     Ok(())
 }
 
-fn kill(id: &str) -> Result<()> {
-    if is_window(id) {
-        // The last window takes its session with it, clients included.
-        let info = tmux::run(&[
-            "display-message",
-            "-p",
-            "-t",
-            id,
-            "#{session_windows}\t#{session_id}",
-        ])?;
-        let (windows, session) = info.split_once('\t').unwrap();
-        if windows == "1" {
-            park_clients(session)?;
+fn kill(id: &RowId) -> Result<()> {
+    match id {
+        RowId::Window(window) => {
+            // The last window takes its session with it, clients included.
+            let info = tmux::run(&[
+                "display-message",
+                "-p",
+                "-t",
+                window,
+                "#{session_windows}\t#{session_id}",
+            ])?;
+            let (windows, session) = info.split_once('\t').context("display-message output")?;
+            if windows == "1" {
+                park_clients(session)?;
+            }
+            tmux::run(&["kill-window", "-t", window])?;
         }
-        tmux::run(&["kill-window", "-t", id])?;
-    } else {
-        park_clients(id)?;
-        tmux::run(&["kill-session", "-t", id])?;
+        RowId::Session(session) => {
+            park_clients(session)?;
+            tmux::run(&["kill-session", "-t", session])?;
+        }
+        RowId::Project(_) => {}
     }
     Ok(())
 }
 
 /// `ctrl-x`: close a session or window right away.
 pub fn close(id: &str) -> Result<()> {
-    if id.is_empty() {
+    let Some(id) = RowId::parse(id) else {
+        return Ok(());
+    };
+    if id.target().is_none() {
         return Ok(());
     }
-    match kill(id) {
+    match kill(&id) {
         Ok(()) => println!("{}", reload()),
         Err(error) => println!("change-header{}", arg(&format!("tmm: {error}"))),
     }
@@ -188,45 +194,38 @@ impl PromptKind {
     }
 }
 
+/// The open inline prompt.
 #[derive(Serialize, Deserialize)]
 struct Pending {
     kind: PromptKind,
     /// The row the question is about.
-    id: String,
+    id: RowId,
     /// The name it had when asked, so an unchanged answer does nothing.
     old: String,
     /// The filter the user had typed, put back when the prompt closes.
     query: String,
 }
 
-fn pending_file() -> Result<PathBuf> {
-    Ok(paths::sidecar(&paths::snapshot()?, "prompt"))
-}
-
-/// The open prompt, if any.
-fn pending() -> Result<Option<Pending>> {
-    let Ok(text) = fs::read_to_string(pending_file()?) else {
-        return Ok(None);
-    };
-    Ok(Some(serde_json::from_str(&text)?))
+fn pending(popup: &Popup) -> Result<Option<Pending>> {
+    popup.read_json(Sidecar::Prompt)
 }
 
 /// The open prompt, if any, removed so it is answered or cancelled once.
-fn take_pending() -> Result<Option<Pending>> {
-    let pending = pending()?;
+fn take_pending(popup: &Popup) -> Result<Option<Pending>> {
+    let pending = pending(popup)?;
     if pending.is_some() {
-        fs::remove_file(pending_file()?)?;
+        popup.remove(Sidecar::Prompt)?;
     }
     Ok(pending)
 }
 
-/// `session_name`, `window_index`, `window_name` of a session or window id.
-fn describe(id: &str) -> Result<[String; 3]> {
+/// `session_name`, `window_index`, `window_name` of a session or window.
+fn describe(target: &str) -> Result<[String; 3]> {
     let text = tmux::run(&[
         "display-message",
         "-p",
         "-t",
-        id,
+        target,
         "#{session_name}\t#{window_index}\t#{window_name}",
     ])?;
     let fields: Vec<String> = text.splitn(3, '\t').map(str::to_string).collect();
@@ -234,22 +233,26 @@ fn describe(id: &str) -> Result<[String; 3]> {
 }
 
 /// Everything back to filtering: prompt, query, header and search.
-fn restore(query: &str) -> Result<String> {
-    Ok(format!(
+fn restore(popup: &Popup, query: &str) -> String {
+    format!(
         "change-prompt({})+change-query{}+change-header()+enable-search",
-        popup::base_prompt(popup::windows_mode()?),
+        popup.mode().prompt(),
         arg(query)
-    ))
+    )
 }
 
 /// `ctrl-o` and `ctrl-r`: open the inline prompt for a row.
 pub fn prompt(kind: PromptKind, id: &str) -> Result<()> {
-    if id.is_empty() {
+    let Some(id) = RowId::parse(id) else {
         return Ok(());
-    }
-    let [session, index, window] = describe(id)?;
+    };
+    let Some(target) = id.target() else {
+        return Ok(());
+    };
+    let popup = Popup::current()?;
+    let [session, index, window] = describe(target)?;
     let (old, header) = match kind {
-        PromptKind::Rename if is_window(id) => (
+        PromptKind::Rename if id.is_window() => (
             window.clone(),
             format!("Rename window {index}: {window} · Enter / Esc"),
         ),
@@ -257,7 +260,7 @@ pub fn prompt(kind: PromptKind, id: &str) -> Result<()> {
             session.clone(),
             format!("Rename session {session} · Enter / Esc"),
         ),
-        PromptKind::Create if popup::windows_mode()? => (
+        PromptKind::Create if popup.mode() == Mode::Windows => (
             String::new(),
             format!("New window in {session} (name optional) · Enter / Esc"),
         ),
@@ -265,11 +268,11 @@ pub fn prompt(kind: PromptKind, id: &str) -> Result<()> {
     };
     let pending = Pending {
         kind,
-        id: id.to_string(),
+        id,
         old: old.clone(),
         query: env::var("FZF_QUERY")?,
     };
-    paths::write_atomic(&pending_file()?, &serde_json::to_string(&pending)?)?;
+    popup.write_json(Sidecar::Prompt, &pending)?;
     println!(
         "change-prompt({})+change-query{}+change-header{}+disable-search",
         kind.prompt(),
@@ -280,24 +283,26 @@ pub fn prompt(kind: PromptKind, id: &str) -> Result<()> {
 }
 
 /// Carry out an answered prompt; `false` means there was nothing to do.
-fn apply(pending: &Pending, answer: &str) -> Result<bool> {
-    let id = pending.id.as_str();
+fn apply(popup: &Popup, pending: &Pending, answer: &str) -> Result<bool> {
+    let Some(target) = pending.id.target() else {
+        return Ok(false);
+    };
     match pending.kind {
         PromptKind::Rename => {
             if answer.is_empty() || answer == pending.old {
                 return Ok(false);
             }
-            let command = if is_window(id) {
+            let command = if pending.id.is_window() {
                 "rename-window"
             } else {
                 "rename-session"
             };
-            tmux::run(&[command, "-t", id, answer])?;
+            tmux::run(&[command, "-t", target, answer])?;
         }
-        PromptKind::Create if popup::windows_mode()? => {
-            let session = tmux::run(&["display-message", "-p", "-t", id, "#{session_id}"])?;
-            let target = format!("{session}:");
-            let mut args = vec!["new-window", "-d", "-t", &target];
+        PromptKind::Create if popup.mode() == Mode::Windows => {
+            let session = tmux::run(&["display-message", "-p", "-t", target, "#{session_id}"])?;
+            let session = format!("{session}:");
+            let mut args = vec!["new-window", "-d", "-t", &session];
             if !answer.is_empty() {
                 args.extend(["-n", answer]);
             }
@@ -315,13 +320,14 @@ fn apply(pending: &Pending, answer: &str) -> Result<bool> {
 
 /// Enter: answer the open prompt, or accept the row.
 pub fn enter() -> Result<()> {
-    let Some(pending) = take_pending()? else {
+    let popup = Popup::current()?;
+    let Some(pending) = take_pending(&popup)? else {
         println!("accept");
         return Ok(());
     };
     let answer = env::var("FZF_QUERY")?;
-    let restore = restore(&pending.query)?;
-    match apply(&pending, answer.trim()) {
+    let restore = restore(&popup, &pending.query);
+    match apply(&popup, &pending, answer.trim()) {
         Ok(true) => println!("{restore}+{}", reload()),
         Ok(false) => println!("{restore}"),
         Err(error) => println!("{restore}+change-header{}", arg(&format!("tmm: {error}"))),
@@ -331,8 +337,9 @@ pub fn enter() -> Result<()> {
 
 /// Esc: cancel the open prompt, or close the popup.
 pub fn escape() -> Result<()> {
-    match take_pending()? {
-        Some(pending) => println!("{}", restore(&pending.query)?),
+    let popup = Popup::current()?;
+    match take_pending(&popup)? {
+        Some(pending) => println!("{}", restore(&popup, &pending.query)),
         None => println!("abort"),
     }
     Ok(())

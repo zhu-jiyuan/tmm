@@ -8,6 +8,8 @@
 #   set -g @tmm-window-key    "w"              # prefix + key: window list  (replaces choose-tree -w)
 #   set -g @tmm-switch-width  "75%"            # popup size, columns or percent
 #   set -g @tmm-switch-height "65%"
+#   set -g @tmm-projects      "~/work ~/oss:2"  # project roots, scanned 1 level deep (or :N); enables the project list
+#   set -g @tmm-project-key   "f"              # prefix + key: project list (replaces find-window), only with @tmm-projects
 
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -45,3 +47,6 @@ bind_popup() {
 
 bind_popup "$(get_opt "@tmm-session-key" "s")" "tmm" ""
 bind_popup "$(get_opt "@tmm-window-key" "w")" "tmm" "--windows"
+if [ -n "$(get_opt "@tmm-projects" "")" ]; then
+  bind_popup "$(get_opt "@tmm-project-key" "f")" "tmm" "--projects"
+fi

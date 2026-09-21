@@ -43,6 +43,8 @@ pub struct Pane {
     pub session_id: String,
     pub session_name: String,
     pub session_attached: bool,
+    /// The directory the session was started in.
+    pub session_path: String,
     pub window_id: String,
     pub window_index: usize,
     pub window_name: String,
@@ -66,7 +68,7 @@ pub fn panes() -> Result<Vec<Pane>> {
         "-F",
         "#{session_id}\t#{session_attached}\t#{window_id}\t#{window_index}\t#{window_active}\t#{window_panes}\t\
          #{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{pane_tty}\t#{pane_current_command}\t#{@tmm-agent}\t\
-         #{session_name}\t#{window_name}",
+         #{session_path}\t#{session_name}\t#{window_name}",
     ])?
     .lines()
     .map(|line| {
@@ -83,9 +85,10 @@ pub fn panes() -> Result<Vec<Pane>> {
             tty,
             command,
             agent,
+            session_path,
             session_name,
             window_name,
-        ] = line.splitn(14, '\t').collect::<Vec<_>>()[..]
+        ] = line.splitn(15, '\t').collect::<Vec<_>>()[..]
         else {
             bail!("list-panes: {line}");
         };
@@ -93,6 +96,7 @@ pub fn panes() -> Result<Vec<Pane>> {
             session_id: session_id.to_string(),
             session_name: session_name.to_string(),
             session_attached: attached != "0",
+            session_path: session_path.to_string(),
             window_id: window_id.to_string(),
             window_index: window_index.parse()?,
             window_name: window_name.to_string(),
