@@ -10,6 +10,7 @@ mod actions;
 mod agent;
 mod ansi;
 mod fzf;
+mod harness;
 mod install;
 mod paths;
 mod popup;
@@ -84,14 +85,14 @@ enum Command {
     Enter,
     /// Esc: cancel the open prompt or close the popup
     Esc,
-    /// Record an agent lifecycle event (called by Claude Code and Codex hooks)
+    /// Record an agent lifecycle event (called by the harnesses' hooks)
     Hook {
-        provider: String,
+        harness: String,
         event: Option<String>,
     },
     /// Print per-window agent activity as JSON
     Activity,
-    /// Merge the hooks into Claude Code and Codex configuration
+    /// Install the hooks of every harness tmm knows
     InstallHooks,
 }
 
@@ -128,8 +129,8 @@ fn main() {
         Command::Enter => actions::enter(),
         Command::Esc => actions::escape(),
         // Hooks only observe. Whatever goes wrong, an agent must never see a failure.
-        Command::Hook { provider, event } => {
-            let _ = agent::hook(&provider, event.as_deref());
+        Command::Hook { harness, event } => {
+            let _ = agent::hook(&harness, event.as_deref());
             Ok(())
         }
         Command::Activity => tmux::panes()

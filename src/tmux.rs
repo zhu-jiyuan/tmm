@@ -5,9 +5,12 @@
 //! Which server we talk to comes from the `TMUX` environment variable, exactly
 //! as it would for a user typing `tmux` inside a session.
 
+use std::collections::HashMap;
 use std::process::Command;
 
 use anyhow::{Result, bail};
+
+use crate::agent;
 
 /// Run tmux and return its stdout, or an error carrying tmux's stderr.
 pub fn run(args: &[&str]) -> Result<String> {
@@ -55,60 +58,75 @@ pub struct Pane {
     pub dead: bool,
     pub tty: String,
     pub command: String,
-    /// The `@tmm-agent` record a hook stored, or "".
-    pub agent: String,
+    /// The records the harnesses' hooks stored on the pane, by slot; "" when none.
+    pub records: HashMap<&'static str, String>,
 }
 
 /// Every pane on the server in one call, sessions and windows in tmux's
-/// order. Names come last because they may contain anything, even tabs.
+/// order. The record columns are whatever slots the harnesses declare; names
+/// come last because they may contain anything, even tabs.
 pub fn panes() -> Result<Vec<Pane>> {
-    run(&[
-        "list-panes",
-        "-a",
-        "-F",
+    const HEAD: usize = 11;
+    const TAIL: usize = 3;
+    let slots = agent::slots();
+    let mut format = String::from(
         "#{session_id}\t#{session_attached}\t#{window_id}\t#{window_index}\t#{window_active}\t#{window_panes}\t\
-         #{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{pane_tty}\t#{pane_current_command}\t#{@tmm-agent}\t\
-         #{session_path}\t#{session_name}\t#{window_name}",
-    ])?
-    .lines()
-    .map(|line| {
-        let [
-            session_id,
-            attached,
-            window_id,
-            window_index,
-            window_active,
-            window_panes,
-            id,
-            pid,
-            dead,
-            tty,
-            command,
-            agent,
-            session_path,
-            session_name,
-            window_name,
-        ] = line.splitn(15, '\t').collect::<Vec<_>>()[..]
-        else {
-            bail!("list-panes: {line}");
-        };
-        Ok(Pane {
-            session_id: session_id.to_string(),
-            session_name: session_name.to_string(),
-            session_attached: attached != "0",
-            session_path: session_path.to_string(),
-            window_id: window_id.to_string(),
-            window_index: window_index.parse()?,
-            window_name: window_name.to_string(),
-            window_active: window_active == "1",
-            window_panes: window_panes.parse()?,
-            id: id.to_string(),
-            pid: pid.parse()?,
-            dead: dead == "1",
-            tty: tty.to_string(),
-            command: command.to_string(),
-            agent: agent.to_string(),
+         #{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{pane_tty}\t#{pane_current_command}",
+    );
+    for slot in &slots {
+        format.push_str(&format!("\t#{{{}}}", agent::option(slot)));
+    }
+    format.push_str("\t#{session_path}\t#{session_name}\t#{window_name}");
+    let total = HEAD + slots.len() + TAIL;
+    run(&["list-panes", "-a", "-F", &format])?
+        .lines()
+        .map(|line| {
+            let fields: Vec<&str> = line.splitn(total, '\t').collect();
+            if fields.len() != total {
+                bail!("list-panes: {line}");
+            }
+            let (head, rest) = fields.split_at(HEAD);
+            let (records, tail) = rest.split_at(slots.len());
+            let [
+                session_id,
+                attached,
+                window_id,
+                window_index,
+                window_active,
+                window_panes,
+                id,
+                pid,
+                dead,
+                tty,
+                command,
+            ] = head[..]
+            else {
+                bail!("list-panes: {line}");
+            };
+            let [session_path, session_name, window_name] = tail[..] else {
+                bail!("list-panes: {line}");
+            };
+            Ok(Pane {
+                session_id: session_id.to_string(),
+                session_name: session_name.to_string(),
+                session_attached: attached != "0",
+                session_path: session_path.to_string(),
+                window_id: window_id.to_string(),
+                window_index: window_index.parse()?,
+                window_name: window_name.to_string(),
+                window_active: window_active == "1",
+                window_panes: window_panes.parse()?,
+                id: id.to_string(),
+                pid: pid.parse()?,
+                dead: dead == "1",
+                tty: tty.to_string(),
+                command: command.to_string(),
+                records: slots
+                    .iter()
+                    .copied()
+                    .zip(records.iter().map(|record| record.to_string()))
+                    .collect(),
+            })
         })
-    })
-    .collect()
+        .collect()
 }

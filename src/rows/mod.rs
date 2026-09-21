@@ -254,7 +254,7 @@ mod tests {
             dead: false,
             tty: String::new(),
             command: "zsh".to_string(),
-            agent: String::new(),
+            records: HashMap::new(),
         }
     }
 

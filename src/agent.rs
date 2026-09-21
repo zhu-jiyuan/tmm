@@ -1,32 +1,51 @@
 //! Agent activity: one state per tmux window.
 //!
-//! Two sources feed it. Lifecycle hooks in Claude Code and Codex call
-//! `tmm hook`, which stores a small JSON record on the pane as the tmux user
-//! option `@tmm-agent`. Without hooks, the collector falls back to the process
-//! tree (is an agent running in this pane?) and the last screen lines (is it
-//! waiting for the user?).
+//! Two sources feed it. The harnesses' lifecycle hooks call `tmm hook`, which
+//! stores a small JSON record on the pane as a tmux user option. Without
+//! hooks, or when the record is stale, the last screen lines say whether the
+//! agent is waiting. What a hook event or a screen means belongs to the
+//! harness that produced it (`harness.rs`); this file finds the processes,
+//! keeps the records and merges the answers.
 //!
-//! Cost matters because the switcher refreshes every second. The
-//! collector only runs `ps` when at least one pane looks like it could hold an
-//! agent, and only captures the screen of panes that do.
+//! Cost matters because the switcher refreshes every second. The collector
+//! only runs `ps` when at least one pane looks like it could hold an agent,
+//! and only captures the screen of panes that do.
 
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
-use std::io;
+use std::io::{self, Read};
 use std::os::unix::process::parent_id;
-use std::path::Path;
 use std::process::Command;
-use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
+use crate::harness::{self, Harness, MAIN, Record, Records};
 use crate::tmux::{self, Pane};
 
-/// tmux pane option that hooks write and the collector reads.
-pub const OPTION: &str = "@tmm-agent";
+/// The tmux pane option holding a record slot.
+pub fn option(slot: &str) -> String {
+    if slot == MAIN {
+        "@tmm-agent".to_string()
+    } else {
+        format!("@tmm-agent-{slot}")
+    }
+}
+
+/// Every slot some harness writes, `main` first and each once: the record
+/// columns `tmux::panes` fetches.
+pub fn slots() -> Vec<&'static str> {
+    let mut slots = vec![MAIN];
+    for harness in harness::ALL {
+        for slot in harness.slots() {
+            if !slots.contains(slot) {
+                slots.push(slot);
+            }
+        }
+    }
+    slots
+}
 
 /// Ordered by priority: waiting beats working beats plain, so the strongest
 /// state of a set of panes is simply the maximum.
@@ -36,17 +55,6 @@ pub enum State {
     Plain,
     Working,
     Waiting,
-}
-
-/// What a hook stores on the pane. `pid` and `started` tie the record to one
-/// specific agent process so a stale record cannot describe a reused PID.
-#[derive(Serialize, Deserialize)]
-pub struct Record {
-    pub state: State,
-    pub pid: i32,
-    pub started: String,
-    pub provider: String,
-    pub event: String,
 }
 
 pub struct Process {
@@ -118,169 +126,59 @@ fn descendants(root: i32, table: &Table) -> HashSet<i32> {
     found
 }
 
-/// Which agent a command line runs, judged by its executable, never by prose in its arguments.
-pub fn agent_name(command: &str) -> Option<&'static str> {
-    let mut words = command.split_whitespace();
-    let first = words.next()?;
-    let executable = Path::new(first).file_name()?.to_str()?;
-    match executable {
-        "codex" => return Some("codex"),
-        "claude" => return Some("claude"),
-        _ => {}
-    }
-    if first.contains("/claude/versions/") {
-        return Some("claude");
-    }
-    if executable.starts_with("codex-aarch64-") || executable.starts_with("codex-x86_64-") {
-        return Some("codex");
-    }
-    if matches!(executable, "node" | "bun") {
-        let script = words.next()?;
-        if script.contains("/@anthropic-ai/claude-code/") {
-            return Some("claude");
-        }
-        if script.contains("/@openai/codex/") {
-            return Some("codex");
-        }
-    }
-    None
-}
-
-const WAIT_TOOLS: &[&str] = &[
-    "askuserquestion",
-    "request_user_input",
-    "request_user_input_async",
-    "enterplanmode",
-    "exitplanmode",
-];
-const WORK_EVENTS: &[&str] = &[
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "PreCompact",
-    "PostCompact",
-];
-const WAIT_EVENTS: &[&str] = &[
-    "SessionStart",
-    "Stop",
-    "StopFailure",
-    "Interrupt",
-    "PermissionRequest",
-];
-const END_EVENTS: &[&str] = &["SessionEnd"];
-
-/// The state a lifecycle event implies, or `None` when it says nothing about activity.
-pub fn event_state(event: &str, payload: &Value) -> Option<State> {
-    if END_EVENTS.contains(&event) {
-        return Some(State::Plain);
-    }
-    if event == "Notification" {
-        let kind = payload
-            .get("notification_type")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        return matches!(
-            kind,
-            "permission_prompt" | "idle_prompt" | "elicitation_dialog"
-        )
-        .then_some(State::Waiting);
-    }
-    if WAIT_EVENTS.contains(&event) {
-        return Some(State::Waiting);
-    }
-    if WORK_EVENTS.contains(&event) {
-        let tool = payload
-            .get("tool_name")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let tool = tool.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-        let waiting = event == "PreToolUse" && WAIT_TOOLS.contains(&tool.as_str());
-        return Some(if waiting {
-            State::Waiting
-        } else {
-            State::Working
-        });
-    }
-    None
-}
-
-fn waiting_pattern() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"usage limit reached|you.ve hit your limit|rate limit exceeded|do you want to proceed|would you like to run|enter to confirm|waiting for (?:your|user)|requires? (?:your )?approval",
-        )
-        .unwrap()
-    })
-}
-
-fn working_pattern() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"esc(?:ape)? to (?:interrupt|stop)|ctrl[+-]c to interrupt").unwrap()
-    })
-}
-
-/// Best-effort reading of an agent's own status line. A question or limit
-/// message wins over a busy hint; no busy hint at all means it is waiting.
-pub fn screen_state(text: &str) -> State {
-    let lines: Vec<&str> = text.lines().collect();
-    let start = lines.len().saturating_sub(14);
-    let tail = lines[start..].join("\n").to_lowercase();
-    if waiting_pattern().is_match(&tail) {
-        State::Waiting
-    } else if working_pattern().is_match(&tail) {
-        State::Working
-    } else {
-        State::Waiting
-    }
-}
-
-/// State of one pane whose process tree starts at `root`.
-pub fn pane_state(root: i32, record: &str, table: &Table, capture: impl Fn() -> String) -> State {
-    let candidates: HashSet<i32> = descendants(root, table)
+/// State of one pane whose process tree starts at `root`, from the records
+/// stored on it by slot. Each harness found in the tree reads its own live
+/// records: a record is live when its pid runs that harness and its start
+/// time matches, so a reused PID cannot resurrect a stale one. The screen is
+/// captured at most once, and only if a harness asks for it.
+pub fn pane_state(
+    root: i32,
+    records: &HashMap<&'static str, String>,
+    table: &Table,
+    capture: impl Fn() -> String,
+) -> State {
+    let agents: HashMap<i32, &'static dyn Harness> = descendants(root, table)
         .into_iter()
-        .filter(|pid| {
-            table
-                .get(pid)
-                .is_some_and(|p| agent_name(&p.command).is_some())
-        })
+        .filter_map(|pid| harness::detect(&table.get(&pid)?.command).map(|h| (pid, h)))
         .collect();
-    if candidates.is_empty() {
+    if agents.is_empty() {
         return State::Plain;
     }
-    if let Ok(saved) = serde_json::from_str::<Record>(record) {
-        let same_process =
-            candidates.contains(&saved.pid) && table[&saved.pid].started == saved.started;
-        if same_process {
-            // A permission hook fires before approval, not when the tool
-            // starts. Only a visible busy hint proves the agent has resumed.
-            if saved.state == State::Waiting && saved.event == "PermissionRequest" {
-                return screen_state(&capture());
-            }
-            return saved.state;
+    let cell = OnceCell::new();
+    let screen = || cell.get_or_init(&capture).clone();
+    let mut seen = HashSet::new();
+    let mut state = State::Plain;
+    for harness in agents.values() {
+        if !seen.insert(harness.name()) {
+            continue;
         }
+        let live: Records = harness
+            .slots()
+            .iter()
+            .filter_map(|slot| {
+                let saved: Record = serde_json::from_str(records.get(slot)?).ok()?;
+                let owner = agents.get(&saved.pid)?;
+                let process = table.get(&saved.pid)?;
+                (owner.name() == harness.name() && process.started == saved.started)
+                    .then_some((*slot, saved))
+            })
+            .collect();
+        state = state.max(harness.pane_state(&live, &screen));
     }
-    screen_state(&capture())
-}
-
-/// Whether a pane's foreground command may be, or may be running, an agent.
-/// Prefix matches because the kernel truncates command names (`codex-aarch64-ap`).
-fn suspect_command(command: &str) -> bool {
-    command.starts_with("claude")
-        || command.starts_with("codex")
-        || matches!(command, "node" | "bun")
+    state
 }
 
 /// One state per window, keyed by window id. `ps` and `capture-pane` run
 /// only for panes that could hold an agent: a hook record is present, or
-/// the foreground command looks like one. `TMM_AGENT_SCAN=always` checks
-/// every pane.
+/// some harness accepts the foreground command. `TMM_AGENT_SCAN=always`
+/// checks every pane.
 pub fn states(panes: &[Pane]) -> Result<BTreeMap<String, State>> {
     let always = env::var("TMM_AGENT_SCAN").is_ok_and(|v| v == "always");
     let suspicious = |pane: &Pane| {
-        !pane.dead && (always || !pane.agent.is_empty() || suspect_command(&pane.command))
+        !pane.dead
+            && (always
+                || pane.records.values().any(|record| !record.is_empty())
+                || harness::suspect(&pane.command))
     };
     let ttys: Vec<&str> = panes
         .iter()
@@ -292,7 +190,7 @@ pub fn states(panes: &[Pane]) -> Result<BTreeMap<String, State>> {
     let mut windows = BTreeMap::new();
     for pane in panes {
         let state = if suspicious(pane) {
-            pane_state(pane.pid, &pane.agent, &table, || {
+            pane_state(pane.pid, &pane.records, &table, || {
                 tmux::run_lossy(&["capture-pane", "-p", "-t", &pane.id, "-S", "-20"])
             })
         } else {
@@ -306,35 +204,22 @@ pub fn states(panes: &[Pane]) -> Result<BTreeMap<String, State>> {
     Ok(windows)
 }
 
-/// Called by an agent's hook. Reads the event payload from stdin unless the
-/// event name is given, finds the agent process above us, and records the
-/// state on the pane. Silent whenever it cannot: hooks must not disturb agents.
-pub fn hook(provider: &str, event: Option<&str>) -> Result<()> {
+/// Called by a harness's hook. Asks the harness what the call means, finds
+/// the harness's process above us, and records the state on the pane.
+/// Silent whenever it cannot: hooks must not disturb agents.
+pub fn hook(name: &str, event: Option<&str>) -> Result<()> {
     let pane = env::var("TMUX_PANE").unwrap_or_default();
     if !pane.starts_with('%') || env::var_os("TMUX").is_none() {
         return Ok(());
     }
-    let payload: Value = match event {
-        Some(_) => Value::Null,
-        None => serde_json::from_reader(io::stdin())?,
-    };
-    // A background subagent must not overwrite the interactive parent's state.
-    if payload
-        .get("agent_id")
-        .is_some_and(|id| !id.is_null() && id.as_str() != Some(""))
-    {
+    let Some(harness) = harness::by_name(name) else {
         return Ok(());
+    };
+    let mut stdin = String::new();
+    if event.is_none() {
+        io::stdin().read_to_string(&mut stdin)?;
     }
-    let name = event
-        .map(str::to_string)
-        .or_else(|| {
-            payload
-                .get("hook_event_name")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .unwrap_or_default();
-    let Some(state) = event_state(&name, &payload) else {
+    let Some(update) = harness.hook(event, &stdin) else {
         return Ok(());
     };
     // Everything in this pane shares its terminal, so ask ps for just that.
@@ -343,7 +228,7 @@ pub fn hook(provider: &str, event: Option<&str>) -> Result<()> {
     let mut owner = None;
     let mut pid = parent_id() as i32;
     while let Some(process) = table.get(&pid) {
-        if agent_name(&process.command).is_some() {
+        if harness.runs(&process.command) {
             owner = Some((pid, process.started.clone()));
             break;
         }
@@ -356,18 +241,18 @@ pub fn hook(provider: &str, event: Option<&str>) -> Result<()> {
         return Ok(());
     };
     let record = Record {
-        state,
+        state: update.state,
         pid,
         started,
-        provider: provider.to_string(),
-        event: name,
+        harness: name.to_string(),
+        event: update.event,
     };
     tmux::run(&[
         "set-option",
         "-p",
         "-t",
         &pane,
-        OPTION,
+        &option(update.slot),
         &serde_json::to_string(&record)?,
     ])?;
     Ok(())
@@ -379,63 +264,13 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn events_map_to_states() {
-        for event in ["UserPromptSubmit", "PostToolUse", "PostCompact"] {
-            assert_eq!(
-                event_state(event, &Value::Null),
-                Some(State::Working),
-                "{event}"
-            );
-        }
-        for event in ["Stop", "Interrupt", "PermissionRequest", "SessionStart"] {
-            assert_eq!(
-                event_state(event, &Value::Null),
-                Some(State::Waiting),
-                "{event}"
-            );
-        }
-        assert_eq!(
-            event_state(
-                "PreToolUse",
-                &json!({"tool_name": "functions.request_user_input"})
-            ),
-            Some(State::Waiting)
-        );
-        assert_eq!(
-            event_state("PreToolUse", &json!({"tool_name": "AskUserQuestion"})),
-            Some(State::Waiting)
-        );
-        assert_eq!(
-            event_state("PreToolUse", &json!({"tool_name": "Bash"})),
-            Some(State::Working)
-        );
-        assert_eq!(event_state("SessionEnd", &Value::Null), Some(State::Plain));
-        assert_eq!(
-            event_state("Notification", &json!({"notification_type": "unrelated"})),
-            None
-        );
-        assert_eq!(
-            event_state("Notification", &json!({"notification_type": "idle_prompt"})),
-            Some(State::Waiting)
-        );
-    }
-
-    #[test]
-    fn agents_are_recognised_by_executable_not_prose() {
-        assert_eq!(agent_name("bash -c 'echo codex working'"), None);
-        assert_eq!(
-            agent_name("node /usr/lib/node_modules/@openai/codex/bin/codex.js"),
-            Some("codex")
-        );
-        assert_eq!(
-            agent_name("/Users/me/.local/share/claude/versions/2.1.263"),
-            Some("claude")
-        );
-        assert_eq!(
-            agent_name("/opt/homebrew/bin/codex --full-auto"),
-            Some("codex")
-        );
-        assert_eq!(agent_name(""), None);
+    fn slots_are_options_on_the_pane() {
+        assert_eq!(option(MAIN), "@tmm-agent");
+        assert_eq!(option("subagent"), "@tmm-agent-subagent");
+        let slots = slots();
+        assert_eq!(slots[0], MAIN);
+        let unique: HashSet<&str> = slots.iter().copied().collect();
+        assert_eq!(unique.len(), slots.len(), "each slot once: {slots:?}");
     }
 
     #[test]
@@ -452,31 +287,29 @@ mod tests {
             );
             t
         };
-        let stale = json!({"pid": 10, "started": "old", "state": "working", "provider": "codex", "event": "x"}).to_string();
+        let records = |text: &str| HashMap::from([(MAIN, text.to_string())]);
+        let stale = json!({"pid": 10, "started": "old", "state": "working", "harness": "codex", "event": "x"}).to_string();
         assert_eq!(
-            pane_state(10, &stale, &table("codex"), || "ready".into()),
+            pane_state(10, &records(&stale), &table("codex"), || "ready".into()),
             State::Waiting
         );
         assert_eq!(
-            pane_state(10, &stale, &table("bash"), || "esc to interrupt".into()),
-            State::Plain
+            pane_state(10, &records(&stale), &table("bash"), || {
+                "esc to interrupt".into()
+            }),
+            State::Plain,
+            "no harness process, no state"
         );
-        let fresh = json!({"pid": 10, "started": "new", "state": "working", "provider": "codex", "event": "x"}).to_string();
+        let fresh = json!({"pid": 10, "started": "new", "state": "working", "harness": "codex", "event": "x"}).to_string();
         assert_eq!(
-            pane_state(10, &fresh, &table("codex"), || "ready".into()),
+            pane_state(10, &records(&fresh), &table("codex"), || "ready".into()),
             State::Working
         );
-    }
-
-    #[test]
-    fn screen_hints() {
-        assert_eq!(screen_state("Working (esc to interrupt)"), State::Working);
         assert_eq!(
-            screen_state("esc to interrupt\nDo you want to proceed?"),
-            State::Waiting
+            pane_state(10, &HashMap::new(), &table("codex"), || "ready".into()),
+            State::Waiting,
+            "no record: the harness reads the screen"
         );
-        assert_eq!(screen_state("You’ve hit your limit"), State::Waiting);
-        assert_eq!(screen_state("$ "), State::Waiting);
     }
 
     #[test]

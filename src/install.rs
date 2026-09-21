@@ -1,8 +1,8 @@
-//! Merge `tmm hook` into the agents' configuration without replacing what is there.
+//! Merge `tmm hook` into a harness's hooks file without replacing what is there.
 //!
-//! Claude Code and Codex read hook lists from JSON files. Existing entries
-//! are kept, earlier tmm entries are replaced, and any changed file is
-//! backed up first.
+//! `tmm install-hooks` lets every harness install itself; the ones that keep
+//! their hooks in a JSON file share [`merge`]. Existing entries are kept,
+//! earlier tmm entries are replaced, and any changed file is backed up first.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -12,18 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use crate::{fzf, paths};
-
-const COMMON: &[&str] = &[
-    "SessionStart",
-    "SessionEnd",
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PostToolUse",
-    "PermissionRequest",
-    "Stop",
-    "PreCompact",
-];
+use crate::{fzf, harness, paths};
 
 fn is_ours(item: &Value) -> bool {
     item.get("command")
@@ -32,7 +21,7 @@ fn is_ours(item: &Value) -> bool {
 }
 
 /// Returns whether the file changed.
-fn merge(path: &Path, events: &[&str], command: &str) -> Result<bool> {
+pub fn merge(path: &Path, events: &[&str], command: &str) -> Result<bool> {
     let mut data: Value = match fs::read_to_string(path) {
         Ok(text) => {
             serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?
@@ -82,34 +71,14 @@ fn merge(path: &Path, events: &[&str], command: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// Every harness installs its own hook, a command baking in the absolute
+/// path of this binary: moving the binary means running this again.
 pub fn install_hooks() -> Result<()> {
     let base = format!("{} hook ", fzf::me());
-    let home = paths::home();
-
-    let claude: Vec<&str> = COMMON
-        .iter()
-        .copied()
-        .chain(["PostToolUseFailure", "StopFailure", "Notification"])
-        .collect();
-    merge(
-        &home.join(".claude/settings.json"),
-        &claude,
-        &format!("{base}claude"),
-    )?;
-
-    let codex: Vec<&str> = COMMON
-        .iter()
-        .copied()
-        .chain(["Interrupt", "PostCompact"])
-        .collect();
-    merge(
-        &home.join(".codex/hooks.json"),
-        &codex,
-        &format!("{base}codex"),
-    )?;
-
-    println!("Installed Claude Code and Codex hooks.");
-    println!("Restart the agents to load them. Review the new hooks in Codex's /hooks UI.");
+    for harness in harness::ALL {
+        harness.install(&format!("{base}{}", harness.name()))?;
+    }
+    println!("Restart the agents to load the hooks.");
     Ok(())
 }
 
