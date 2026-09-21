@@ -181,8 +181,11 @@ fn rows_favorites_help_and_refresh() {
         "beta",
         "sessions mode: both name columns alike"
     );
-    assert_eq!(beta[4].matches('●').count(), 2, "one dot per window");
-    assert!(beta[4].contains("\x1b[90m"), "plain dots are dim grey");
+    assert_eq!(beta[4].matches('●').count(), 0, "no agent, no dot");
+    assert_eq!(
+        beta[4], "  ",
+        "the dots column keeps one cell without agents"
+    );
     assert!(beta[5].contains("2 windows"));
     let name_width = |row: &str| row.split('\t').nth(2).unwrap().len();
     assert_eq!(
@@ -447,7 +450,7 @@ fn windows_mode_lists_manages_and_previews_windows() {
         plain(editor[3]).chars().count(),
         "both name columns share a width"
     );
-    assert_eq!(editor[4].matches('●').count(), 1, "one dot per window row");
+    assert_eq!(editor[4].matches('●').count(), 0, "no agent, no dot");
     assert_eq!(editor[5], "", "a lone pane is not worth a badge");
 
     let editor_id = ids[2].clone();
@@ -650,8 +653,29 @@ fn agent_activity_from_hooks_and_from_the_screen() {
         record()
     );
     assert_eq!(activity(), r#"{"@0":"plain","@1":"working"}"#);
+    let session_dots = || {
+        let output = server.tmm_with(&["list"], "", &scan);
+        let rows = String::from_utf8(output.stdout).unwrap();
+        rows.lines()
+            .next()
+            .unwrap()
+            .split('\t')
+            .nth(4)
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(
+        session_dots(),
+        "\x1b[32m●\x1b[0m ",
+        "a working agent is one plain green dot"
+    );
     hook("Stop");
     assert_eq!(activity(), r#"{"@0":"plain","@1":"waiting"}"#);
+    assert_eq!(
+        session_dots(),
+        "\x1b[33m●\x1b[0m ",
+        "a waiting agent is one plain yellow dot"
+    );
 
     server.tmux(&["send-keys", "-t", &pane, "esc to interrupt", "Enter"]);
     thread::sleep(Duration::from_millis(300));
@@ -678,18 +702,10 @@ fn agent_activity_from_hooks_and_from_the_screen() {
 
     hook("SessionEnd");
     assert_eq!(activity(), r#"{"@0":"plain","@1":"plain"}"#);
-
-    let rows = server.tmm(&["list"]);
     assert_eq!(
-        rows.lines()
-            .next()
-            .unwrap()
-            .split('\t')
-            .nth(4)
-            .unwrap()
-            .matches('●')
-            .count(),
-        2
+        session_dots().matches('●').count(),
+        0,
+        "an ended agent leaves no dot"
     );
 }
 
@@ -775,7 +791,7 @@ fn projects_mode_lists_and_opens_directories() {
     );
     let first: Vec<&str> = rows.lines().next().unwrap().split('\t').collect();
     assert_eq!(first[0], id, "an open project is its session's row");
-    assert_eq!(first[4].matches('●').count(), 1);
+    assert_eq!(first[4].matches('●').count(), 0, "no agent, no dot");
     assert!(plain(first[5]).contains("1 window"), "{:?}", first[5]);
 
     server.tmm(&["favorite", "toggle", "beta_app"]);

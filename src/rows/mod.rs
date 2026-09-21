@@ -22,16 +22,13 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 use crate::agent::{self, State};
-use crate::ansi::{pad, tint, visible_width};
+use crate::ansi::{faint, pad, tint, visible_width};
 use crate::popup::Mode;
 use crate::projects::Project;
 use crate::state::Switcher;
 use crate::tmux::{self, Pane};
 
 pub use id::RowId;
-
-/// Guides, indexes, breadcrumbs, badges and idle dots: present but quiet.
-const DIM: &str = "brightblack";
 
 pub struct Row {
     pub id: RowId,
@@ -108,7 +105,8 @@ pub fn layout(rows: &[Row]) -> Vec<String> {
             .unwrap_or(0)
     };
     let name_width = widest(|row| &row.tree).max(widest(|row| &row.breadcrumb));
-    let dots_width = widest(|row| &row.dots);
+    // At least one cell, so the badges do not shift when the first agent shows up.
+    let dots_width = widest(|row| &row.dots).max(1);
     rows.iter()
         .map(|row| {
             format!(
@@ -130,16 +128,20 @@ pub fn join(lines: &[String]) -> String {
     text
 }
 
+/// One dot per agent: a window without one shows nothing, so a dot always
+/// means "an agent is here" and only its colour needs reading. Plain ANSI
+/// green and yellow, not the bright variants: Solarized fills the bright
+/// slots with its grey base tones, which made the dots indistinguishable.
 fn dots(states: &[State]) -> String {
     states
         .iter()
-        .map(|state| {
+        .filter_map(|state| {
             let colour = match state {
-                State::Plain => DIM,
-                State::Working => "brightgreen",
-                State::Waiting => "brightyellow",
+                State::Plain => return None,
+                State::Working => "green",
+                State::Waiting => "yellow",
             };
-            tint("●", colour)
+            Some(tint("●", colour))
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -151,7 +153,7 @@ fn count(n: usize, noun: &str) -> String {
 }
 
 fn badge(text: &str) -> String {
-    tint(text, DIM)
+    faint(text)
 }
 
 /// The name column: a star for favorites, a space to keep the rest aligned.
@@ -276,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn sessions_are_starred_first_with_a_dot_per_window() {
+    fn sessions_are_starred_first_with_a_dot_per_agent() {
         let mut d = data(vec![
             pane(("$0", "alpha"), ("@0", 0, "zsh")),
             pane(("$0", "alpha"), ("@1", 1, "editor")),
@@ -292,17 +294,24 @@ mod tests {
         let [tree, _, dots, badge] = fields(&rows[0]);
         assert_eq!(
             (tree.as_str(), dots.as_str(), badge.as_str()),
-            ("★ beta", "●", "1 window · attached")
+            ("★ beta", "", "1 window · attached"),
+            "no agent, no dot"
         );
         let [tree, _, dots, badge] = fields(&rows[1]);
         assert_eq!(
             (tree.as_str(), dots.as_str(), badge.as_str()),
-            ("  alpha", "● ●", "2 windows")
+            ("  alpha", "●", "2 windows"),
+            "one dot per agent, not per window"
         );
         assert!(
-            rows[1].dots.contains("\x1b[92m"),
-            "working is green: {:?}",
+            rows[1].dots.contains("\x1b[32m"),
+            "working is plain green: {:?}",
             rows[1].dots
+        );
+        assert!(
+            rows[1].badge.starts_with("\x1b[2m"),
+            "badges are faint: {:?}",
+            rows[1].badge
         );
         assert!(
             !rows[1].tree.contains("\x1b[1m"),
@@ -318,18 +327,29 @@ mod tests {
             pane(("$0", "alpha"), ("@1", 1, "editor")),
         ]);
         d.panes[0].window_panes = 2;
+        d.states.insert("@1".into(), State::Waiting);
 
         let rows = build(&d, Mode::Windows);
         assert!(rows[0].tree.contains("\x1b[1malpha"), "{:?}", rows[0].tree);
         let [tree, crumb, dots, badge] = fields(&rows[1]);
         assert_eq!(
             (tree.as_str(), crumb.as_str(), dots.as_str(), badge.as_str()),
-            ("  ├ 0 → zsh", "  alpha:0 → zsh", "●", "2 panes")
+            ("  ├ 0 → zsh", "  alpha:0 → zsh", "", "2 panes")
         );
-        let [tree, crumb, _, badge] = fields(&rows[2]);
+        assert!(
+            rows[1].tree.starts_with("  \x1b[2m├ 0\x1b[0m"),
+            "guides are faint: {:?}",
+            rows[1].tree
+        );
+        let [tree, crumb, dots, badge] = fields(&rows[2]);
         assert_eq!(
-            (tree.as_str(), crumb.as_str(), badge.as_str()),
-            ("  └ 1   editor", "  alpha:1   editor", "")
+            (tree.as_str(), crumb.as_str(), dots.as_str(), badge.as_str()),
+            ("  └ 1   editor", "  alpha:1   editor", "●", "")
+        );
+        assert!(
+            rows[2].dots.contains("\x1b[33m"),
+            "waiting is plain yellow: {:?}",
+            rows[2].dots
         );
         assert_eq!(rows[2].id, RowId::Window("@1".into()));
         assert_eq!(
@@ -406,6 +426,10 @@ mod tests {
             let cells: Vec<&str> = line.split('\t').collect();
             assert_eq!(cells.len(), 6, "{line:?}");
             assert_eq!(visible_width(cells[2]), visible_width(cells[3]), "{line:?}");
+            assert_eq!(
+                cells[4], "  ",
+                "the dots column keeps one cell without agents: {line:?}"
+            );
         }
     }
 }

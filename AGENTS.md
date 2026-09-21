@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`tmm` is a personal tmux plugin: an fzf popup for switching, creating, renaming and closing sessions and windows, for opening project directories as sessions, with a coloured dot per window showing whether Claude Code or Codex is working or waiting. It is a single Rust binary (`src/`) plus a tmux entry script (`tmm.tmux`). README.md and README.zh.md are twins; keep both in sync when keys or options change.
+`tmm` is a personal tmux plugin: an fzf popup for switching, creating, renaming and closing sessions and windows, for opening project directories as sessions, with a green or yellow dot on each window where Claude Code or Codex is working or waiting. It is a single Rust binary (`src/`) plus a tmux entry script (`tmm.tmux`). README.md and README.zh.md are twins; keep both in sync when keys or options change.
 
 ## Commands
 
@@ -53,7 +53,7 @@ Release: `scripts/package.sh <rust-target>` builds `dist/tmm-v<version>-<target>
 
 **Hook installation (`install.rs`).** `tmm install-hooks` merges command hooks into `~/.claude/settings.json` and `~/.codex/hooks.json`, keeping foreign entries, replacing earlier tmm entries (recognised by a command containing `tmm` and ` hook `), backing the file up first, and chmod 600. The command bakes in the absolute path of the running binary (`fzf::me()`), so moving the binary means re-running `install-hooks`. The event lists per provider are in that file; `agent.rs` must know how to map any event added there.
 
-**Styling follows tmux.** `fzf::colours()` reads `#{status-style}` and paints the cursor row with the status bar's bg/fg, or leaves the highlight to the user's own fzf theme (`FZF_DEFAULT_OPTS`) when the bar has no bg. Rows keep their own ANSI colours and attributes on the cursor row (`regular` without `strip`), so the dots stay readable there and only session headers are bold. `tmm.tmux` gives the popup border the same bg. Dot colours are fixed ANSI (`rows::dots`: dim grey = no agent, green = working, yellow = waiting) and `NO_COLOR` is stripped from fzf's environment on purpose. `ansi.rs` measures visible width (skipping CSI sequences, counting CJK as two cells) for column padding and preview clipping; use `visible_width`/`pad`/`clip_line` rather than `.len()` on anything that reaches the terminal.
+**Styling follows tmux.** `fzf::colours()` reads `#{status-style}` and paints the cursor row with the status bar's bg/fg, or leaves the highlight to the user's own fzf theme (`FZF_DEFAULT_OPTS`) when the bar has no bg. Rows keep their own ANSI colours and attributes on the cursor row (`regular` without `strip`), so the dots stay readable there and only session headers are bold. `tmm.tmux` gives the popup border the same bg. A window without an agent has no dot; `rows::dots` paints working green and waiting yellow with the plain ANSI colours, never the bright ones, because Solarized fills the bright slots with its grey base tones. Secondary text (tree guides, breadcrumbs, badges) is SGR faint (`ansi::faint`) rather than a colour, since no palette index is dim under both light and dark themes. `NO_COLOR` is stripped from fzf's environment on purpose. `ansi.rs` measures visible width (skipping CSI sequences, counting CJK as two cells) for column padding and preview clipping; use `visible_width`/`pad`/`clip_line` rather than `.len()` on anything that reaches the terminal.
 
 ## Conventions
 

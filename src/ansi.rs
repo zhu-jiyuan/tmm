@@ -75,6 +75,15 @@ pub fn bold(text: &str) -> String {
     format!("\x1b[1m{text}\x1b[0m")
 }
 
+/// `text` faint (SGR 2), reset afterwards. Secondary text is dimmed as an
+/// attribute rather than painted a colour: no palette index is "dim" under
+/// every theme (Solarized's brightblack is the darkest tone in light mode
+/// and the background in dark mode), but every terminal knows how to fade
+/// its own foreground.
+pub fn faint(text: &str) -> String {
+    format!("\x1b[2m{text}\x1b[0m")
+}
+
 fn cell_width(c: char) -> usize {
     c.width().unwrap_or(0)
 }

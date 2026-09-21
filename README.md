@@ -3,9 +3,9 @@
 [中文](README.zh.md)
 
 A personal tmux plugin: one fzf popup to switch between sessions and windows,
-create, rename and close them, with a dot per window showing whether Claude
-Code or Codex is working or waiting for you. A single Rust binary; every key
-runs one subcommand that takes a few milliseconds.
+create, rename and close them, with a green or yellow dot on each window
+where Claude Code or Codex is working or waiting for you. A single Rust
+binary; every key runs one subcommand that takes a few milliseconds.
 
 ![tmm popup](docs/tmm.svg)
 

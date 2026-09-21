@@ -6,9 +6,9 @@
 //! match text it does not show, so their breadcrumb column repeats
 //! `session:index` and the popup switches to it while the query is non-empty.
 
-use super::{DIM, Data, Group, Row, RowId, badge, count, dots};
+use super::{Data, Group, Row, RowId, badge, count, dots};
 use crate::agent::State;
-use crate::ansi::{bold, tint};
+use crate::ansi::{bold, faint};
 
 pub(super) fn rows(groups: &[Group], data: &Data, windows: bool) -> Vec<Row> {
     // Right-aligned indexes keep the names in a column past the tenth window.
@@ -76,10 +76,10 @@ fn window_rows(group: &Group, data: &Data, index_width: usize) -> Vec<Row> {
                 name: session.session_name.clone(),
                 tree: format!(
                     "  {} {mark} {}",
-                    tint(&format!("{guide} {index}"), DIM),
+                    faint(&format!("{guide} {index}")),
                     window.window_name
                 ),
-                breadcrumb: format!("  {} {mark} {}", tint(&crumb, DIM), window.window_name),
+                breadcrumb: format!("  {} {mark} {}", faint(&crumb), window.window_name),
                 dots: dots(&[state]),
                 badge: if window.window_panes > 1 {
                     badge(&count(window.window_panes, "pane"))

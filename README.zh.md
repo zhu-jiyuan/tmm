@@ -3,7 +3,7 @@
 [English](README.md)
 
 个人用的 tmux 管理插件：一个 fzf 弹窗，用来在 session 和窗口之间切换、新建、
-改名、关闭，并用圆点显示每个窗口里 Claude Code / Codex 是在工作还是在等你。
+改名、关闭，并在有 Claude Code / Codex 的窗口上用绿点或黄点显示它是在工作还是在等你。
 Rust 单二进制，每个按键只跑一次几毫秒的子命令。
 
 ![tmm 弹窗](docs/tmm.svg)
