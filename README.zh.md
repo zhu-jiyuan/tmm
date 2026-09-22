@@ -10,8 +10,19 @@ Rust 单二进制，每个按键只跑一次几毫秒的子命令。
 
 ## 安装
 
-依赖 tmux 3.3+ 和 fzf 0.74.3+。`cargo build --release`，或从 Releases 下载
-对应平台的 tarball 解压。然后在 tmux 配置里加一行并重载：
+依赖 tmux 3.3+ 和 fzf 0.74.3+。
+
+用 [TPM](https://github.com/tmux-plugins/tpm) 的话，加上插件后按 `prefix + I`：
+
+```tmux
+set -g @plugin 'zhu-jiyuan/tmm'
+```
+
+插件会把对应平台的 release 二进制下载到脚本旁边，用 GitHub 公布的 digest 校验；
+没有对应平台的 release 时用 cargo 编译。`prefix + U` 更新插件时二进制一起更新。
+
+手动安装：`cargo build --release`，或从 Releases 下载对应平台的 tarball 解压。
+然后在 tmux 配置里加一行并重载：
 
 ```tmux
 run-shell /path/to/tmm.tmux

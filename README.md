@@ -11,9 +11,23 @@ binary; every key runs one subcommand that takes a few milliseconds.
 
 ## Install
 
-Needs tmux 3.3+ and fzf 0.74.3+. Either `cargo build --release` or download
-the tarball for your platform from Releases and unpack it. Then add one line to
-your tmux config and reload:
+Needs tmux 3.3+ and fzf 0.74.3+.
+
+With [TPM](https://github.com/tmux-plugins/tpm), add the plugin and press
+`prefix + I`:
+
+```tmux
+set -g @plugin 'zhu-jiyuan/tmm'
+```
+
+The plugin fetches the release binary for your platform next to its script,
+checks it against the digest GitHub publishes for the asset, and builds it with
+cargo when there is no release for your platform. `prefix + U` updates the
+binary along with the plugin.
+
+By hand, either `cargo build --release` or download the tarball for your
+platform from Releases and unpack it. Then add one line to your tmux config and
+reload:
 
 ```tmux
 run-shell /path/to/tmm.tmux

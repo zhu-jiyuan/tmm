@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # tmm - tmux session and window switcher on fzf.
-# Load it from ~/.tmux.conf with:
+# Load it with TPM:
+#   set -g @plugin 'zhu-jiyuan/tmm'
+# or from ~/.tmux.conf directly:
 #   run-shell ~/path/to/tmm/tmm.tmux
 # Options go before that line:
 #   set -g @tmm-bin           "/path/to/tmm"   # default: tmm next to this script, target/release/tmm, ~/.cargo/bin/tmm, or PATH
@@ -28,6 +30,23 @@ if [ -z "$bin" ]; then
       break
     fi
   done
+fi
+
+# A checkout (TPM clones one) has no binary: fetch the release for this
+# platform next to this script, and fetch again when the checkout moves to
+# another version. A symlinked tmm is a developer's own and is left alone.
+fetched="$CURRENT_DIR/tmm"
+version="$(grep -m1 '^version' "$CURRENT_DIR/Cargo.toml" 2>/dev/null | cut -d'"' -f2)"
+if [ -n "$version" ] && [ ! -L "$fetched" ]; then
+  if [ -z "$bin" ] || { [ "$bin" = "$fetched" ] && [ "$("$bin" --version 2>/dev/null)" != "tmm $version" ]; }; then
+    if "$CURRENT_DIR/scripts/install.sh"; then
+      bin="$fetched"
+      tmux display-message "tmm $version installed"
+    elif [ -z "$bin" ]; then
+      tmux display-message "tmm: could not install the binary; see scripts/install.sh or set @tmm-bin"
+      exit 0
+    fi
+  fi
 fi
 if [ -z "$bin" ]; then
   tmux display-message "tmm: binary not found; run cargo build --release or set @tmm-bin"
