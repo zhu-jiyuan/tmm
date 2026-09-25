@@ -136,6 +136,28 @@ pub fn run(client: &str, mode: Mode) -> Result<()> {
     for bind in binds(&me, popup.snapshot()) {
         command.args(["--bind", &bind]);
     }
+    if mode == Mode::Windows {
+        // Query the opening client: the popup's TMUX_PANE can refer to a
+        // different window. Include the session for windows linked into several.
+        let clients = tmux::run_lossy(&[
+            "list-clients",
+            "-F",
+            "#{client_name}\t#{window_id}\t#{session_name}",
+        ]);
+        let prefix = format!("{client}\t");
+        if let Some((window, session)) = clients
+            .lines()
+            .find_map(|line| line.strip_prefix(&prefix))
+            .and_then(|line| line.split_once('\t'))
+            && let Some(index) = text.lines().position(|line| {
+                let mut fields = line.split('\t');
+                fields.next() == Some(window) && fields.next() == Some(session)
+            })
+        {
+            // Position once after all rows arrive; reloads keep the user's cursor.
+            command.args(["--bind", &format!("load:pos({})+unbind(load)", index + 1)]);
+        }
+    }
     command
         .env("SHELL", "/bin/sh")
         .env("TMM_SNAPSHOT", popup.snapshot())
